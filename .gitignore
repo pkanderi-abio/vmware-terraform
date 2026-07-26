@@ -1,0 +1,12 @@
+.terraform/
+.terraform.lock.hcl
+.env
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfvars
+!terraform.tfvars.example
+crash.log
+apply.log
+csi-apply.log
+kubeconfig.yaml

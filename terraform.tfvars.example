@@ -1,0 +1,57 @@
+# Copy to terraform.tfvars and fill in for your environment.
+
+# vCenter credentials. The vsphere PROVIDER itself reads VSPHERE_USER /
+# VSPHERE_PASSWORD / VSPHERE_SERVER from the environment instead of these --
+# export those too. These variables exist because the in-cluster vSphere CSI
+# driver secret is rendered from them, and Terraform variables can't read the
+# provider's own env-var fallback.
+vsphere_user     = "administrator@vsphere.local"
+vsphere_password = "CHANGE-ME"
+vsphere_server   = "vcenter.example.com"
+
+vsphere_datacenter = "Datacenter1"
+vsphere_cluster    = "Cluster1"
+vsphere_datastore  = "datastore1"
+vsphere_network    = "VM Network"
+vsphere_folder     = "k8s"
+
+# vc.example.com uses a self-signed cert -- set true only if you understand
+# and accept skipping vCenter TLS verification.
+vsphere_allow_unverified_ssl = false
+
+# ds:///vmfs/volumes/<uuid>/ -- NOT the datastore's display name, and not
+# exposed by the vsphere_datastore data source. Find it via the datastore's
+# summary.url property (pyvmomi/govc against the same vCenter). Used by the
+# vSphere CSI StorageClass to target volume placement.
+vsphere_datastore_url = "ds:///vmfs/volumes/CHANGE-ME/"
+
+template_name = "ubuntu-2204-cloudinit-template"
+
+cluster_name = "rke2-lab"
+worker_count = 2
+
+# PLACEHOLDER VALUES -- do not assume these match your vSphere network. Verify
+# the real subnet/gateway/DNS for vsphere_network above before setting static
+# IPs (see "Prerequisites" / "Known rough edges" in CLAUDE.md for a safe way
+# to confirm it via a throwaway DHCP boot). A portgroup name is not proof of
+# its subnet.
+control_plane_ip_addresses = ["10.0.10.11", "10.0.10.12", "10.0.10.13"]
+worker_ip_addresses        = ["10.0.10.21", "10.0.10.22"]
+control_plane_vip          = "10.0.10.10"
+
+network_prefix_length  = 24
+network_gateway        = "10.0.10.1"
+network_dns_servers    = ["10.0.10.2"]
+network_interface_name = "ens192"
+vm_domain              = "local"
+
+rke2_version = "v1.30.4+rke2r1"
+# rke2_token generated with: openssl rand -hex 32
+rke2_token = "CHANGE-ME"
+
+# vsphere-csi-driver release tag -- confirm it's listed as compatible with
+# your vCenter/ESXi version before changing: https://github.com/kubernetes-sigs/vsphere-csi-driver
+vsphere_csi_driver_version = "v3.7.2"
+
+ssh_public_key       = "ssh-ed25519 AAAA... you@example.com"
+ssh_private_key_path = "~/.ssh/id_rsa"
