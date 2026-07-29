@@ -234,6 +234,21 @@ variable "registry_password" {
   sensitive   = true
 }
 
+# -----------------------------------------------------------------------------
+# MetalLB (LoadBalancer Services)
+# -----------------------------------------------------------------------------
+
+variable "metallb_version" {
+  description = "metallb/metallb release tag to install."
+  type        = string
+  default     = "v0.16.0"
+}
+
+variable "metallb_ip_range" {
+  description = "IP range MetalLB hands out for type: LoadBalancer Services, e.g. \"192.168.100.20-192.168.100.29\". Must not overlap the cluster's own static IPs/VIP, and should be excluded from the network's DHCP pool."
+  type        = string
+}
+
 variable "ssh_public_key" {
   description = "Public key installed on the default \"ubuntu\" user of every node."
   type        = string

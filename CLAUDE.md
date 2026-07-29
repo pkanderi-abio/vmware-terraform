@@ -12,6 +12,8 @@ A sweep of all 6 worker nodes' kernel logs (`sudo dmesg | grep -c 'aborted journ
 
 **Do not try to fix this by recreating individual PVCs** — that treats a symptom, not the cause, and was already tried twice on the registry's volume with the corruption recurring both times. This needs vSphere/storage-team investigation: datastore health, ESXi host storage-adapter logs, multipathing status. Until it's resolved, treat any CSI-backed workload's data as at-risk, and be extra cautious about node reboots on workers running stateful (non-replicated, or replicated-but-you-haven't-checked) workloads.
 
+**Escalation**: the in-cluster MinIO (`observe-dev`'s object store backing Loki/Mimir/Tempo) was found with `listPathRaw: 0 drives provided` errors and its PVC double-mounted onto two different block devices (`/dev/sdd` and `/dev/sdf`) simultaneously on the same node — a device-identity confusion consistent with the same underlying issue, not a separate one. This means MinIO's *own* stored data should not be assumed intact either — don't rely on "Loki/Mimir/Tempo's real data lives safely in S3 (MinIO)" as a reassurance without first confirming MinIO itself is healthy.
+
 ## Commands
 
 ```bash
@@ -22,7 +24,16 @@ terraform plan
 terraform apply
 ```
 
-There is no test suite, linter config, or CI pipeline in this repo. `terraform validate` is the correctness check; `terraform plan` against real vCenter credentials is the only way to catch data-source lookup errors (bad datacenter/cluster/datastore/network/template names).
+There is no test suite. [.github/workflows/terraform.yml](.github/workflows/terraform.yml) runs `fmt -check`, `validate`, and `tfsec` on every push/PR (no vCenter credentials involved — it can't catch data-source lookup errors). `terraform plan` against real vCenter credentials is the only way to catch those (bad datacenter/cluster/datastore/network/template names).
+
+## State management
+
+State is a **local file** (`terraform.tfstate`), not a remote backend — deliberately, not just by default. The natural remote-backend candidate in this environment is the in-cluster MinIO (`observe-dev`), but two things rule that out for now: it's `ClusterIP`-only (unreachable from wherever `terraform apply` runs without first exposing it), and — discovered while investigating this — it's currently unhealthy from the same storage issue described above (`listPathRaw: 0 drives provided`). Revisit a MinIO-backed `s3`-compatible backend once that's resolved; don't build on storage that's already known to be failing.
+
+In the meantime:
+- `terraform.tfstate`, `terraform.tfstate.backup`, `terraform.tfvars`, and `.env` all contain plaintext secrets (`rke2_token`, `vsphere_password`, `registry_password`, ...) — Terraform does not encrypt sensitive values in local state, it only redacts them from CLI output. Keep these at `chmod 600`; they are not just gitignored, they should never be group/world-readable on disk either.
+- **Back up `terraform.tfstate` before any risky operation** (a `-replace`, a provider upgrade, restructuring resources) — copy it somewhere outside the repo. There's no automated backup; this is a manual discipline until a real remote backend is available.
+- If the state file is ever lost, this cluster is *not* unrecoverable — the actual infrastructure still exists in vSphere/Kubernetes — but Terraform loses track of it, and reconstructing state (via `terraform import`, one resource at a time) is real, tedious work. Treat the state file with the same care as the credentials it contains.
 
 Before `apply`, copy `terraform.tfvars.example` to `terraform.tfvars` and fill in real values. vCenter credentials are **not** set via `terraform.tfvars` — export them instead, since the provider (`providers.tf`) reads them from the environment by default:
 
@@ -88,6 +99,16 @@ Getting registries.yaml onto nodes that already existed when this config was add
 
 Expect `terraform plan` to periodically show a `disk { label = "orphaned_disk_N" -> "<remove, keep disk>" }` change on whichever node happens to be running the registry (or any other CSI-backed workload) at the time — that's Terraform noticing the CNS-attached VMDK it doesn't manage and normalizing its own bookkeeping label. It's a relabel only (the notation explicitly keeps the disk); applying it is safe and doesn't touch the volume's contents.
 
+## External access (MetalLB)
+
+`null_resource.install_metallb` installs [MetalLB](https://metallb.io/) (native manifest, L2/ARP mode — same mechanism `kube-vip` already uses for the control-plane VIP) and hands it `var.metallb_ip_range` as its address pool. It also creates `ingress-nginx-lb`, a `type: LoadBalancer` Service in `kube-system` selecting RKE2's bundled `rke2-ingress-nginx-controller` DaemonSet, which otherwise has **no** Service of its own — only an admission-webhook Service exists by default.
+
+Worth knowing before assuming this was strictly necessary: the ingress-nginx DaemonSet's containers already declare `hostPort: 80`/`443` (confirmed via `kubectl get ds -n kube-system rke2-ingress-nginx-controller -o jsonpath='{.spec.template.spec.containers[0].ports}'`), which means **it was already reachable on every node's own IP** before MetalLB existed (`curl http://<any-node-ip>` returns nginx's default 404). MetalLB's actual value-add here is a single stable floating IP instead of requiring callers to know all N node IPs — plus general `type: LoadBalancer` capability for any future Service, not just ingress.
+
+The IPAddressPool/L2Advertisement config apply can fail on the very first attempt because MetalLB's validating webhook isn't accepting connections yet even after its Deployment reports "rollout complete" — the remote-exec script retries (12× / 5s apart) rather than treating the first failure as fatal.
+
+Same IP-range caution as `control_plane_ip_addresses`/`worker_ip_addresses`: `metallb_ip_range` must be verified free and excluded from DHCP, not guessed.
+
 ## Enterprise hardening
 
 A few production-readiness gaps were closed after the initial build, all additive and independently verified against the live cluster:
@@ -96,8 +117,9 @@ A few production-readiness gaps were closed after the initial build, all additiv
 - **`etcd_snapshot_schedule_cron`/`etcd_snapshot_retention`** enable RKE2's built-in etcd snapshotting (local disk only — see the variable descriptions in [variables.tf](variables.tf) for why this isn't real off-node DR by itself).
 - **`reserve_memory`/`cpu_share_level`** on `modules/vm`, set for control-plane nodes only: a full memory reservation (no ballooning/swapping) plus high CPU shares, guarding etcd's latency-sensitive disk I/O against noisy-neighbor contention on shared hosts. A hard MHz `cpu_reservation` was deliberately avoided since it isn't portable across heterogeneous hosts.
 - **`vsphere_tag_category.managed_by`/`vsphere_tag.terraform_managed`** mark every VM this repo creates at the vCenter level, applied via `modules/vm`'s `tag_ids` variable — visible in the vSphere client independent of anything in Terraform state.
-- **`.github/workflows/terraform.yml`** runs `fmt -check` and `validate` on every push/PR. No vCenter credentials involved (`init -backend=false`), so it's safe to run against a public repo/fork without provisioning any secrets.
+- **`.github/workflows/terraform.yml`** runs `fmt -check`, `validate`, and `tfsec` on every push/PR. No vCenter credentials involved (`init -backend=false`), so it's safe to run against a public repo/fork without provisioning any secrets.
 - **Registry basic auth** (`registry_username`/`registry_password`) — see the Registry section below.
+- **MetalLB** for `type: LoadBalancer` Services — see the External access section below.
 
 **Rollout lesson**: `null_resource`s that push config over SSH (`configure_registry_mirror_*`) need an explicit `triggers` block hashing the content they push. Without one, changing what the referenced `local` value renders to (e.g. adding auth to `registries_config_yaml`) does **not** cause Terraform to re-run the provisioners against nodes the resource already succeeded on — `null_resource` has no other way to detect that the rendered file changed underneath it, and a stale push silently ships an outdated config to already-provisioned nodes indefinitely.
 

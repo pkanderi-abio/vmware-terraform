@@ -434,3 +434,41 @@ resource "null_resource" "configure_registry_mirror_cp2" {
     ]
   }
 }
+
+# ---------------------------------------------------------------------------
+# MetalLB: gives Services of type LoadBalancer (starting with ingress-nginx,
+# which otherwise only has per-node hostPort 80/443 -- reachable, but callers
+# would need to know all N node IPs rather than one stable floating address)
+# a real floating IP from var.metallb_ip_range, ARP-advertised the same way
+# kube-vip advertises the control-plane VIP.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "install_metallb" {
+  depends_on = [null_resource.install_vsphere_csi]
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.metallb_config_yaml
+    destination = "/tmp/metallb-config.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      "eval $KCTL apply -f ${local.metallb_manifest_url}",
+      "eval $KCTL -n metallb-system rollout status deployment/controller --timeout=5m",
+      "eval $KCTL -n metallb-system rollout status daemonset/speaker --timeout=5m",
+      # The validating webhook's endpoint can take a few seconds past
+      # "rollout complete" to actually start accepting connections -- retry
+      # rather than fail on the first attempt.
+      "for i in $(seq 1 12); do eval $KCTL apply -f /tmp/metallb-config.yaml && break; sleep 5; done",
+    ]
+  }
+}

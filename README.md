@@ -63,7 +63,8 @@ flowchart TB
 | ☁️ **Zero-touch node config** | cloud-init via the VMware GuestInfo datasource — no guest customization specs to manage |
 | 💾 **Real persistent storage** | vSphere CSI driver wired in by default — dynamic PVs backed by actual VMDKs, portable across nodes |
 | 📦 **In-cluster registry** | `registry:2` with basic auth, reachable from every node via the control-plane VIP, for custom/mirrored images |
-| 🏢 **Enterprise-hardened** | DRS anti-affinity across hosts, etcd snapshots, resource reservations, vSphere tagging, CI on every push |
+| 🏢 **Enterprise-hardened** | DRS anti-affinity across hosts, etcd snapshots, resource reservations, vSphere tagging, security-scanned CI |
+| 🌐 **LoadBalancer Services** | MetalLB (L2/ARP, same mechanism as the control-plane VIP) gives ingress-nginx — and any future Service — a real floating IP |
 | 📈 **Scales with a variable** | `worker_count` — no forking the config to add capacity |
 
 ## Quick start

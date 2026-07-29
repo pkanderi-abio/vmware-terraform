@@ -24,3 +24,12 @@ jobs:
 
       - name: terraform validate
         run: terraform validate
+
+  security-scan:
+    name: tfsec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3

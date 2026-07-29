@@ -42,4 +42,10 @@ locals {
     registry_password = var.registry_password
   })
   registries_config_yaml_b64 = base64encode(local.registries_config_yaml)
+
+  metallb_manifest_url = "https://raw.githubusercontent.com/metallb/metallb/${var.metallb_version}/config/manifests/metallb-native.yaml"
+
+  metallb_config_yaml = templatefile("${path.module}/templates/metallb/config.yaml.tpl", {
+    ip_range = var.metallb_ip_range
+  })
 }

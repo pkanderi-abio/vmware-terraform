@@ -65,5 +65,12 @@ registry_username     = "admin"
 # registry_password generated with: openssl rand -hex 20
 registry_password = "CHANGE-ME"
 
+# metallb/metallb release tag -- see https://github.com/metallb/metallb/releases
+metallb_version = "v0.16.0"
+# PLACEHOLDER -- verify these IPs are actually free on your network (nmap
+# sweep or similar) and excluded from DHCP before using them, same caution
+# as control_plane_ip_addresses/worker_ip_addresses above.
+metallb_ip_range = "10.0.10.30-10.0.10.39"
+
 ssh_public_key       = "ssh-ed25519 AAAA... you@example.com"
 ssh_private_key_path = "~/.ssh/id_rsa"
