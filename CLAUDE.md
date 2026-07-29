@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Terraform that provisions a highly-available RKE2 (Rancher Kubernetes Engine 2) cluster on VMware vSphere: 3 control-plane nodes fronted by a `kube-vip` (ARP mode) virtual IP, plus N worker nodes. VMs are cloned from a pre-built cloud-init-enabled template and configured entirely through cloud-init (via the VMware GuestInfo datasource) — no vSphere guest customization specs are used.
 
+## ⚠️ Known active issue: datastore-level storage corruption
+
+A sweep of all 6 worker nodes' kernel logs (`sudo dmesg | grep -c 'aborted journal'`) found ext4 journal-abort events in the **hundreds to 1000+** on 5 of 6 nodes, affecting multiple unrelated PVC-backed workloads (the in-cluster registry, Loki replicas) on multiple different nodes at different times — including at least once with no VM reboot involved at all. That scale means this is an ongoing, active condition on the `LAB-LUN01` datastore (or its path to the ESXi hosts), not something any single Terraform operation caused, though VM-level reboots do appear to trigger *visible* symptoms by disrupting volumes that were already degrading underneath.
+
+**Do not try to fix this by recreating individual PVCs** — that treats a symptom, not the cause, and was already tried twice on the registry's volume with the corruption recurring both times. This needs vSphere/storage-team investigation: datastore health, ESXi host storage-adapter logs, multipathing status. Until it's resolved, treat any CSI-backed workload's data as at-risk, and be extra cautious about node reboots on workers running stateful (non-replicated, or replicated-but-you-haven't-checked) workloads.
+
 ## Commands
 
 ```bash
@@ -65,7 +71,7 @@ Two `modules/vm` settings exist specifically for CSI to work, both worth knowing
 
 ## Registry
 
-`null_resource.install_registry` deploys a plain, unauthenticated `registry:2` in-cluster (namespace `registry`, PVC on `vsphere-csi`, exposed as a `NodePort` Service). Nodes pull from it at `http://<control_plane_vip>:<registry_node_port>` (default port `30500`) — this works from any node because NodePort is exposed by kube-proxy cluster-wide, independent of which node currently holds the kube-vip VIP. `local.registry_address` in [locals.tf](locals.tf) is that address; `templates/registries.yaml.tpl` renders the containerd mirror config that makes it trusted as plain HTTP (no TLS).
+`null_resource.install_registry` deploys `registry:2` in-cluster (namespace `registry`, PVC on `vsphere-csi`, exposed as a `NodePort` Service) with htpasswd basic auth (`registry_username`/`registry_password`, hashed via Terraform's native `bcrypt()` — no external `htpasswd` tool needed). Nodes pull from it at `http://<control_plane_vip>:<registry_node_port>` (default port `30500`) — this works from any node because NodePort is exposed by kube-proxy cluster-wide, independent of which node currently holds the kube-vip VIP. `local.registry_address` in [locals.tf](locals.tf) is that address; `templates/registries.yaml.tpl` renders both the containerd mirror config that trusts it as plain HTTP (no TLS) and the `configs.auth` block so containerd authenticates automatically on every node — without it, pulls fail with `no basic auth credentials`. Still no TLS by design; see the "Known active issue" and Drawbacks sections for why this shouldn't be reachable from anywhere untrusted.
 
 Getting an image *into* it: there's no `docker` CLI on the nodes. Use RKE2's bundled `ctr` against its containerd socket, e.g. from any node:
 ```bash
@@ -78,9 +84,22 @@ $CTR image push --plain-http --platform linux/amd64 <registry_address>/someimage
 
 Getting registries.yaml onto nodes that already existed when this config was added is **not** something a plain reboot can do — see the cloud-init rough edge below. `null_resource.configure_registry_mirror_workers`/`_cp0`/`_cp1`/`_cp2` push the file over SSH and restart the RKE2 service directly instead (CP nodes one at a time, same quorum reasoning as everywhere else in this file). This is harmless to leave running on every apply, including against brand-new nodes that already got the file via cloud-init.
 
-**Real incident**: repeated back-to-back `kubectl apply`/pod-recreate cycles while first standing up the registry (a failed apply retried, then Terraform's own taint-triggered retry) caused its PVC's block volume to be force-detached and reattached to the pod's node several times in a few minutes. That corrupted the ext4 journal (`Aborting journal on device sdb-8`, `Buffer I/O error`) before any real image had been pushed, and every push started failing with `500 Internal Server Error` / `input/output error` from the registry container. There was no data worth recovering, so the fix was just deleting and recreating the PVC + Deployment. If this StatefulSet-style workload starts holding real data, don't casually re-`apply` its Deployment while a previous rollout might still be settling — a `Recreate`-strategy Deployment detaches/reattaches its volume on every pod recreation, and doing that repeatedly in a short window is what caused the corruption here.
+**Real incident(s)**: the registry's PVC hit ext4 journal corruption (`Aborting journal`, `input/output error` on reads) **three separate times** across this repo's history — first from repeated back-to-back `kubectl apply`/pod-recreate cycles while first standing it up, then twice more from unrelated node reboots during later rollouts, with the third occurrence happening with *no* intervening reboot at all. Each time the fix was the same (delete + recreate the PVC and Deployment; there was never real data worth recovering), but by the third occurrence it was clear this isn't specific to the registry or to reboots — see "Known active issue" at the top of this file. If this workload starts holding real data, don't casually re-`apply` its Deployment while a previous rollout might still be settling — a `Recreate`-strategy Deployment detaches/reattaches its volume on every pod recreation — but also don't assume fixing that eliminates the risk.
 
 Expect `terraform plan` to periodically show a `disk { label = "orphaned_disk_N" -> "<remove, keep disk>" }` change on whichever node happens to be running the registry (or any other CSI-backed workload) at the time — that's Terraform noticing the CNS-attached VMDK it doesn't manage and normalizing its own bookkeeping label. It's a relabel only (the notation explicitly keeps the disk); applying it is safe and doesn't touch the volume's contents.
+
+## Enterprise hardening
+
+A few production-readiness gaps were closed after the initial build, all additive and independently verified against the live cluster:
+
+- **`vsphere_compute_cluster_vm_anti_affinity_rule.control_plane`** (`mandatory = true`) keeps the 3 control-plane VMs on 3 different ESXi hosts. Without this, DRS is free to stack all 3 etcd members on one host, silently defeating the entire point of "3-node HA" — a single host failure would then take out the whole control plane. Requires at least 3 hosts in the target cluster to be satisfiable; `mandatory = true` will block host maintenance-mode entry if too few hosts remain to honor it.
+- **`etcd_snapshot_schedule_cron`/`etcd_snapshot_retention`** enable RKE2's built-in etcd snapshotting (local disk only — see the variable descriptions in [variables.tf](variables.tf) for why this isn't real off-node DR by itself).
+- **`reserve_memory`/`cpu_share_level`** on `modules/vm`, set for control-plane nodes only: a full memory reservation (no ballooning/swapping) plus high CPU shares, guarding etcd's latency-sensitive disk I/O against noisy-neighbor contention on shared hosts. A hard MHz `cpu_reservation` was deliberately avoided since it isn't portable across heterogeneous hosts.
+- **`vsphere_tag_category.managed_by`/`vsphere_tag.terraform_managed`** mark every VM this repo creates at the vCenter level, applied via `modules/vm`'s `tag_ids` variable — visible in the vSphere client independent of anything in Terraform state.
+- **`.github/workflows/terraform.yml`** runs `fmt -check` and `validate` on every push/PR. No vCenter credentials involved (`init -backend=false`), so it's safe to run against a public repo/fork without provisioning any secrets.
+- **Registry basic auth** (`registry_username`/`registry_password`) — see the Registry section below.
+
+**Rollout lesson**: `null_resource`s that push config over SSH (`configure_registry_mirror_*`) need an explicit `triggers` block hashing the content they push. Without one, changing what the referenced `local` value renders to (e.g. adding auth to `registries_config_yaml`) does **not** cause Terraform to re-run the provisioners against nodes the resource already succeeded on — `null_resource` has no other way to detect that the rendered file changed underneath it, and a stale push silently ships an outdated config to already-provisioned nodes indefinitely.
 
 ## Known rough edges to be aware of when editing
 

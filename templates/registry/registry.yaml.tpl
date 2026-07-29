@@ -4,6 +4,15 @@ metadata:
   name: registry
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-htpasswd
+  namespace: registry
+stringData:
+  htpasswd: |
+    ${htpasswd_content}
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: registry-data
@@ -37,9 +46,19 @@ spec:
           image: registry:2
           ports:
             - containerPort: 5000
+          env:
+            - name: REGISTRY_AUTH
+              value: htpasswd
+            - name: REGISTRY_AUTH_HTPASSWD_REALM
+              value: Registry
+            - name: REGISTRY_AUTH_HTPASSWD_PATH
+              value: /auth/htpasswd
           volumeMounts:
             - name: data
               mountPath: /var/lib/registry
+            - name: auth
+              mountPath: /auth
+              readOnly: true
           readinessProbe:
             tcpSocket:
               port: 5000
@@ -48,6 +67,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: registry-data
+        - name: auth
+          secret:
+            secretName: registry-htpasswd
 ---
 apiVersion: v1
 kind: Service

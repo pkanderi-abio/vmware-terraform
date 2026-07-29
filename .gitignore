@@ -1,5 +1,4 @@
 .terraform/
-.terraform.lock.hcl
 .env
 *.tfstate
 *.tfstate.*
@@ -10,4 +9,5 @@ crash.log
 apply.log
 csi-apply.log
 registry-apply.log
+enterprise-apply.log
 kubeconfig.yaml

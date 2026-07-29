@@ -27,11 +27,19 @@ locals {
 
   registry_address = "${var.control_plane_vip}:${var.registry_node_port}"
 
+  # bcrypt() is a native Terraform function -- no external htpasswd tool needed.
+  registry_htpasswd = "${var.registry_username}:${bcrypt(var.registry_password)}"
+
   registry_manifest_yaml = templatefile("${path.module}/templates/registry/registry.yaml.tpl", {
-    storage_size = var.registry_storage_size
-    node_port    = var.registry_node_port
+    storage_size     = var.registry_storage_size
+    node_port        = var.registry_node_port
+    htpasswd_content = local.registry_htpasswd
   })
 
-  registries_config_yaml     = templatefile("${path.module}/templates/registries.yaml.tpl", { registry_address = local.registry_address })
+  registries_config_yaml = templatefile("${path.module}/templates/registries.yaml.tpl", {
+    registry_address  = local.registry_address
+    registry_username = var.registry_username
+    registry_password = var.registry_password
+  })
   registries_config_yaml_b64 = base64encode(local.registries_config_yaml)
 }

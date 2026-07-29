@@ -10,6 +10,15 @@ resource "vsphere_virtual_machine" "this" {
   guest_id             = "ubuntu64Guest"
   firmware             = "efi"
 
+  # Guard latency-sensitive roles (etcd) against noisy-neighbor contention.
+  # A hard MHz cpu_reservation isn't used because it isn't portable across
+  # heterogeneous hosts in the cluster; shares plus a full memory reservation
+  # (no ballooning/swapping) is the more portable form of the same guarantee.
+  memory_reservation = var.reserve_memory ? var.memory_mb : 0
+  cpu_share_level    = var.cpu_share_level
+
+  tags = var.tag_ids
+
   # Required by the vSphere CSI driver to reliably match a PV's backing VMDK
   # to the node it's attached to.
   enable_disk_uuid = true

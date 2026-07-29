@@ -188,6 +188,18 @@ variable "rke2_token" {
   sensitive   = true
 }
 
+variable "etcd_snapshot_schedule_cron" {
+  description = "Cron schedule for RKE2's built-in etcd snapshotting. Snapshots land on each control-plane node's local disk (/var/lib/rancher/rke2/server/db/snapshots) -- this alone is not off-node backup/DR, just protection against a bad write/upgrade."
+  type        = string
+  default     = "0 */6 * * *"
+}
+
+variable "etcd_snapshot_retention" {
+  description = "How many local etcd snapshots to retain per control-plane node."
+  type        = number
+  default     = 10
+}
+
 variable "vsphere_csi_driver_version" {
   description = "kubernetes-sigs/vsphere-csi-driver release tag to install."
   type        = string
@@ -208,6 +220,18 @@ variable "registry_storage_size" {
   description = "Size of the PVC (on the vsphere-csi StorageClass) backing the registry's image storage."
   type        = string
   default     = "50Gi"
+}
+
+variable "registry_username" {
+  description = "Basic auth username for the in-cluster registry. Required on both the registry side (htpasswd) and the node side (registries.yaml), so every node can actually pull from it."
+  type        = string
+  default     = "admin"
+}
+
+variable "registry_password" {
+  description = "Basic auth password for the in-cluster registry. Generate with e.g. `openssl rand -hex 20`."
+  type        = string
+  sensitive   = true
 }
 
 variable "ssh_public_key" {

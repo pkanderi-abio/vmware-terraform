@@ -31,6 +31,24 @@ resource "vsphere_folder" "vm_folder" {
 }
 
 # ---------------------------------------------------------------------------
+# Governance tagging -- marks every VM this repo manages at the vCenter level,
+# independent of anything visible from inside Terraform state alone.
+# ---------------------------------------------------------------------------
+
+resource "vsphere_tag_category" "managed_by" {
+  name             = "managed-by"
+  description      = "What provisioned this object."
+  cardinality      = "SINGLE"
+  associable_types = ["VirtualMachine"]
+}
+
+resource "vsphere_tag" "terraform_managed" {
+  name        = "terraform:${var.cluster_name}"
+  category_id = vsphere_tag_category.managed_by.id
+  description = "Managed by the ${var.cluster_name} Terraform state. Do not hand-edit in vCenter."
+}
+
+# ---------------------------------------------------------------------------
 # Control-plane node 0: bootstraps the cluster (cluster-init) and carries the
 # kube-vip manifest that gives the other nodes a stable join address.
 # ---------------------------------------------------------------------------
@@ -49,6 +67,11 @@ module "control_plane_primary" {
   memory_mb = var.control_plane_memory_mb
   disk_gb   = var.control_plane_disk_gb
 
+  # etcd is latency-sensitive -- guard it against host contention.
+  reserve_memory  = true
+  cpu_share_level = "high"
+  tag_ids         = [vsphere_tag.terraform_managed.id]
+
   metadata = templatefile("${path.module}/templates/cloud-init/metadata.yaml.tpl", {
     hostname       = local.control_plane_names[0]
     ip_address     = var.control_plane_ip_addresses[0]
@@ -59,15 +82,17 @@ module "control_plane_primary" {
   })
 
   userdata = templatefile("${path.module}/templates/cloud-init/control-plane-userdata.yaml.tpl", {
-    hostname              = local.control_plane_names[0]
-    domain                = var.vm_domain
-    ssh_public_key        = var.ssh_public_key
-    rke2_token            = var.rke2_token
-    rke2_version          = var.rke2_version
-    control_plane_vip     = var.control_plane_vip
-    is_primary            = true
-    kube_vip_manifest_b64 = local.kube_vip_manifest_b64
-    registries_config_b64 = local.registries_config_yaml_b64
+    hostname                    = local.control_plane_names[0]
+    domain                      = var.vm_domain
+    ssh_public_key              = var.ssh_public_key
+    rke2_token                  = var.rke2_token
+    rke2_version                = var.rke2_version
+    control_plane_vip           = var.control_plane_vip
+    is_primary                  = true
+    kube_vip_manifest_b64       = local.kube_vip_manifest_b64
+    registries_config_b64       = local.registries_config_yaml_b64
+    etcd_snapshot_schedule_cron = var.etcd_snapshot_schedule_cron
+    etcd_snapshot_retention     = var.etcd_snapshot_retention
   })
 }
 
@@ -117,6 +142,10 @@ module "control_plane_secondary" {
   memory_mb = var.control_plane_memory_mb
   disk_gb   = var.control_plane_disk_gb
 
+  reserve_memory  = true
+  cpu_share_level = "high"
+  tag_ids         = [vsphere_tag.terraform_managed.id]
+
   metadata = templatefile("${path.module}/templates/cloud-init/metadata.yaml.tpl", {
     hostname       = local.control_plane_names[tonumber(each.key)]
     ip_address     = var.control_plane_ip_addresses[tonumber(each.key)]
@@ -127,18 +156,36 @@ module "control_plane_secondary" {
   })
 
   userdata = templatefile("${path.module}/templates/cloud-init/control-plane-userdata.yaml.tpl", {
-    hostname              = local.control_plane_names[tonumber(each.key)]
-    domain                = var.vm_domain
-    ssh_public_key        = var.ssh_public_key
-    rke2_token            = var.rke2_token
-    rke2_version          = var.rke2_version
-    control_plane_vip     = var.control_plane_vip
-    is_primary            = false
-    kube_vip_manifest_b64 = ""
-    registries_config_b64 = local.registries_config_yaml_b64
+    hostname                    = local.control_plane_names[tonumber(each.key)]
+    domain                      = var.vm_domain
+    ssh_public_key              = var.ssh_public_key
+    rke2_token                  = var.rke2_token
+    rke2_version                = var.rke2_version
+    control_plane_vip           = var.control_plane_vip
+    is_primary                  = false
+    kube_vip_manifest_b64       = ""
+    registries_config_b64       = local.registries_config_yaml_b64
+    etcd_snapshot_schedule_cron = var.etcd_snapshot_schedule_cron
+    etcd_snapshot_retention     = var.etcd_snapshot_retention
   })
 
   depends_on = [null_resource.wait_for_primary]
+}
+
+# Nothing about DRS placement inherently keeps the 3 etcd members on separate
+# hosts -- without this, a single ESXi host failure can take out the entire
+# control plane despite "3 nodes" suggesting otherwise. `mandatory = true`
+# requires at least 3 hosts in the cluster (verified: 4 here); it will block
+# host maintenance-mode entry if too few hosts remain to satisfy it.
+resource "vsphere_compute_cluster_vm_anti_affinity_rule" "control_plane" {
+  name               = "${var.cluster_name}-control-plane-anti-affinity"
+  compute_cluster_id = data.vsphere_compute_cluster.cluster.id
+  enabled            = true
+  mandatory          = true
+  virtual_machine_ids = concat(
+    [module.control_plane_primary.id],
+    [for m in module.control_plane_secondary : m.id],
+  )
 }
 
 # ---------------------------------------------------------------------------
@@ -159,6 +206,8 @@ module "workers" {
   num_cpus  = var.worker_cpu
   memory_mb = var.worker_memory_mb
   disk_gb   = var.worker_disk_gb
+
+  tag_ids = [vsphere_tag.terraform_managed.id]
 
   metadata = templatefile("${path.module}/templates/cloud-init/metadata.yaml.tpl", {
     hostname       = local.worker_names[tonumber(each.key)]
@@ -226,10 +275,11 @@ resource "null_resource" "install_vsphere_csi" {
 }
 
 # ---------------------------------------------------------------------------
-# In-cluster image registry: a plain, unauthenticated registry:2 backed by a
+# In-cluster image registry: registry:2 with htpasswd basic auth, backed by a
 # vsphere-csi PVC. Nodes pull from it as http://<control_plane_vip>:<node_port>
 # -- NodePort is exposed by kube-proxy on every node, so this works regardless
-# of which node currently holds the kube-vip VIP.
+# of which node currently holds the kube-vip VIP. Plain HTTP, no TLS -- fine
+# only because this network is itself access-controlled.
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "install_registry" {
@@ -271,6 +321,13 @@ resource "null_resource" "configure_registry_mirror_workers" {
   for_each   = toset([for i in range(var.worker_count) : tostring(i)])
   depends_on = [null_resource.install_registry]
 
+  # Without this, a content-only change (e.g. adding registry auth) would
+  # never re-run on nodes this already succeeded against -- null_resource
+  # has no other way to detect that the *rendered file* changed underneath it.
+  triggers = {
+    config_hash = md5(local.registries_config_yaml)
+  }
+
   connection {
     type        = "ssh"
     host        = var.worker_ip_addresses[tonumber(each.key)]
@@ -297,6 +354,10 @@ resource "null_resource" "configure_registry_mirror_workers" {
 resource "null_resource" "configure_registry_mirror_cp0" {
   depends_on = [null_resource.install_registry]
 
+  triggers = {
+    config_hash = md5(local.registries_config_yaml)
+  }
+
   connection {
     type        = "ssh"
     host        = var.control_plane_ip_addresses[0]
@@ -321,6 +382,10 @@ resource "null_resource" "configure_registry_mirror_cp0" {
 resource "null_resource" "configure_registry_mirror_cp1" {
   depends_on = [null_resource.configure_registry_mirror_cp0]
 
+  triggers = {
+    config_hash = md5(local.registries_config_yaml)
+  }
+
   connection {
     type        = "ssh"
     host        = var.control_plane_ip_addresses[1]
@@ -344,6 +409,10 @@ resource "null_resource" "configure_registry_mirror_cp1" {
 
 resource "null_resource" "configure_registry_mirror_cp2" {
   depends_on = [null_resource.configure_registry_mirror_cp1]
+
+  triggers = {
+    config_hash = md5(local.registries_config_yaml)
+  }
 
   connection {
     type        = "ssh"

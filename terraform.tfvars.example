@@ -49,6 +49,11 @@ rke2_version = "v1.30.4+rke2r1"
 # rke2_token generated with: openssl rand -hex 32
 rke2_token = "CHANGE-ME"
 
+# Local-disk-only etcd snapshots -- protection against a bad write/upgrade,
+# NOT off-node backup/DR. See CLAUDE.md if you need real DR.
+etcd_snapshot_schedule_cron = "0 */6 * * *"
+etcd_snapshot_retention     = 10
+
 # vsphere-csi-driver release tag -- confirm it's listed as compatible with
 # your vCenter/ESXi version before changing: https://github.com/kubernetes-sigs/vsphere-csi-driver
 vsphere_csi_driver_version = "v3.7.2"
@@ -56,6 +61,9 @@ vsphere_csi_driver_version = "v3.7.2"
 # In-cluster registry:2, reachable at http://<control_plane_vip>:<registry_node_port>.
 registry_node_port    = 30500
 registry_storage_size = "50Gi"
+registry_username     = "admin"
+# registry_password generated with: openssl rand -hex 20
+registry_password = "CHANGE-ME"
 
 ssh_public_key       = "ssh-ed25519 AAAA... you@example.com"
 ssh_private_key_path = "~/.ssh/id_rsa"

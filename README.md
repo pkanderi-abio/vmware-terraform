@@ -62,7 +62,8 @@ flowchart TB
 | 🔁 **Fully declarative** | One `terraform apply` provisions VMs, waits for real cluster readiness, then joins the rest — not a race |
 | ☁️ **Zero-touch node config** | cloud-init via the VMware GuestInfo datasource — no guest customization specs to manage |
 | 💾 **Real persistent storage** | vSphere CSI driver wired in by default — dynamic PVs backed by actual VMDKs, portable across nodes |
-| 📦 **In-cluster registry** | A plain `registry:2`, reachable from every node via the control-plane VIP, for custom/mirrored images |
+| 📦 **In-cluster registry** | `registry:2` with basic auth, reachable from every node via the control-plane VIP, for custom/mirrored images |
+| 🏢 **Enterprise-hardened** | DRS anti-affinity across hosts, etcd snapshots, resource reservations, vSphere tagging, CI on every push |
 | 📈 **Scales with a variable** | `worker_count` — no forking the config to add capacity |
 
 ## Quick start
@@ -121,4 +122,6 @@ kubectl get nodes
 
 ## Known limitations
 
-The in-cluster registry has no auth and no TLS — fine on an access-controlled internal network, not fine anywhere else. Cluster resizing beyond `worker_count` requires a plan/apply, not autoscaling. See [RFC-001 → Drawbacks](docs/rfc/0001-ha-rke2-on-vsphere.md#drawbacks--known-limitations) for the complete list.
+⚠️ **Active issue**: a sweep of this cluster's worker nodes found ongoing ext4 journal corruption (hundreds to 1000+ abort events per node on 5 of 6 workers), affecting CSI-backed volumes across multiple unrelated workloads. This points to a datastore/storage-path problem, not something caused by any single operation here — see `CLAUDE.md` for details. Treat CSI-backed workload data as at-risk until the underlying storage is investigated.
+
+The in-cluster registry has basic auth but still no TLS — fine on an access-controlled internal network, not fine anywhere else. Cluster resizing beyond `worker_count` requires a plan/apply, not autoscaling. See [RFC-001 → Drawbacks](docs/rfc/0001-ha-rke2-on-vsphere.md#drawbacks--known-limitations) for the complete list.

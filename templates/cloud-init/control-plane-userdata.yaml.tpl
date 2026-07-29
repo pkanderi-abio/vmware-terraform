@@ -19,6 +19,8 @@ write_files:
       tls-san:
         - ${control_plane_vip}
       node-name: ${hostname}
+      etcd-snapshot-schedule-cron: "${etcd_snapshot_schedule_cron}"
+      etcd-snapshot-retention: ${etcd_snapshot_retention}
 %{ if !is_primary ~}
       server: https://${control_plane_vip}:9345
 %{ endif ~}
