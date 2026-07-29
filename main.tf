@@ -67,6 +67,7 @@ module "control_plane_primary" {
     control_plane_vip     = var.control_plane_vip
     is_primary            = true
     kube_vip_manifest_b64 = local.kube_vip_manifest_b64
+    registries_config_b64 = local.registries_config_yaml_b64
   })
 }
 
@@ -134,6 +135,7 @@ module "control_plane_secondary" {
     control_plane_vip     = var.control_plane_vip
     is_primary            = false
     kube_vip_manifest_b64 = ""
+    registries_config_b64 = local.registries_config_yaml_b64
   })
 
   depends_on = [null_resource.wait_for_primary]
@@ -168,12 +170,13 @@ module "workers" {
   })
 
   userdata = templatefile("${path.module}/templates/cloud-init/worker-userdata.yaml.tpl", {
-    hostname          = local.worker_names[tonumber(each.key)]
-    domain            = var.vm_domain
-    ssh_public_key    = var.ssh_public_key
-    rke2_token        = var.rke2_token
-    rke2_version      = var.rke2_version
-    control_plane_vip = var.control_plane_vip
+    hostname              = local.worker_names[tonumber(each.key)]
+    domain                = var.vm_domain
+    ssh_public_key        = var.ssh_public_key
+    rke2_token            = var.rke2_token
+    rke2_version          = var.rke2_version
+    control_plane_vip     = var.control_plane_vip
+    registries_config_b64 = local.registries_config_yaml_b64
   })
 
   depends_on = [null_resource.wait_for_primary]
@@ -218,6 +221,147 @@ resource "null_resource" "install_vsphere_csi" {
       # StorageClasses marked default is ambiguous, so demote it in favor of
       # the vSphere-backed one set up above.
       "eval $KCTL patch storageclass local-path -p '{\"metadata\": {\"annotations\":{\"storageclass.kubernetes.io/is-default-class\":\"false\"}}}' || true",
+    ]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# In-cluster image registry: a plain, unauthenticated registry:2 backed by a
+# vsphere-csi PVC. Nodes pull from it as http://<control_plane_vip>:<node_port>
+# -- NodePort is exposed by kube-proxy on every node, so this works regardless
+# of which node currently holds the kube-vip VIP.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "install_registry" {
+  depends_on = [null_resource.install_vsphere_csi]
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.registry_manifest_yaml
+    destination = "/tmp/registry.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      "eval $KCTL apply -f /tmp/registry.yaml",
+      "eval $KCTL -n registry rollout status deployment/registry --timeout=5m",
+    ]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Push registries.yaml directly to nodes that already existed before this
+# config was added. Cloud-init's write_files/runcmd stage only runs once per
+# instance (tracked by a marker on disk) -- a plain reboot with updated
+# extra_config does NOT make an already-bootstrapped node re-process its
+# user-data, so a fresh clone's cloud-init step alone can't reach these nodes.
+# Safe to leave in permanently: on a brand-new node this is a harmless no-op
+# (the file's already there from cloud-init), and it self-heals any drift.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "configure_registry_mirror_workers" {
+  for_each   = toset([for i in range(var.worker_count) : tostring(i)])
+  depends_on = [null_resource.install_registry]
+
+  connection {
+    type        = "ssh"
+    host        = var.worker_ip_addresses[tonumber(each.key)]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.registries_config_yaml
+    destination = "/tmp/registries.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo systemctl restart rke2-agent",
+    ]
+  }
+}
+
+# Control-plane nodes one at a time -- restarting rke2-server also restarts
+# the local etcd member, so all three restarting together risks quorum loss.
+resource "null_resource" "configure_registry_mirror_cp0" {
+  depends_on = [null_resource.install_registry]
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.registries_config_yaml
+    destination = "/tmp/registries.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo systemctl restart rke2-server",
+    ]
+  }
+}
+
+resource "null_resource" "configure_registry_mirror_cp1" {
+  depends_on = [null_resource.configure_registry_mirror_cp0]
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[1]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.registries_config_yaml
+    destination = "/tmp/registries.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo systemctl restart rke2-server",
+    ]
+  }
+}
+
+resource "null_resource" "configure_registry_mirror_cp2" {
+  depends_on = [null_resource.configure_registry_mirror_cp1]
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[2]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.registries_config_yaml
+    destination = "/tmp/registries.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo systemctl restart rke2-server",
     ]
   }
 }

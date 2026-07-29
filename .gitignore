@@ -9,4 +9,5 @@ terraform.tfvars
 crash.log
 apply.log
 csi-apply.log
+registry-apply.log
 kubeconfig.yaml

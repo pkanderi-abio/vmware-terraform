@@ -28,6 +28,10 @@ write_files:
     encoding: b64
     content: ${kube_vip_manifest_b64}
 %{ endif ~}
+  - path: /etc/rancher/rke2/registries.yaml
+    permissions: '0644'
+    encoding: b64
+    content: ${registries_config_b64}
 
 runcmd:
   - curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION=${rke2_version} INSTALL_RKE2_TYPE=server sh -

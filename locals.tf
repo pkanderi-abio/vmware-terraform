@@ -24,4 +24,14 @@ locals {
   csi_storageclass_yaml = templatefile("${path.module}/templates/csi/storageclass.yaml.tpl", {
     datastore_url = var.vsphere_datastore_url
   })
+
+  registry_address = "${var.control_plane_vip}:${var.registry_node_port}"
+
+  registry_manifest_yaml = templatefile("${path.module}/templates/registry/registry.yaml.tpl", {
+    storage_size = var.registry_storage_size
+    node_port    = var.registry_node_port
+  })
+
+  registries_config_yaml     = templatefile("${path.module}/templates/registries.yaml.tpl", { registry_address = local.registry_address })
+  registries_config_yaml_b64 = base64encode(local.registries_config_yaml)
 }

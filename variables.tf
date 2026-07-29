@@ -194,6 +194,22 @@ variable "vsphere_csi_driver_version" {
   default     = "v3.7.2"
 }
 
+# -----------------------------------------------------------------------------
+# In-cluster image registry
+# -----------------------------------------------------------------------------
+
+variable "registry_node_port" {
+  description = "NodePort the in-cluster registry:2 Service listens on. Reachable at control_plane_vip:this-port, since the VIP's node always runs kube-proxy too."
+  type        = number
+  default     = 30500
+}
+
+variable "registry_storage_size" {
+  description = "Size of the PVC (on the vsphere-csi StorageClass) backing the registry's image storage."
+  type        = string
+  default     = "50Gi"
+}
+
 variable "ssh_public_key" {
   description = "Public key installed on the default \"ubuntu\" user of every node."
   type        = string
