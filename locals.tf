@@ -27,8 +27,16 @@ locals {
 
   registry_address = "${var.control_plane_vip}:${var.registry_node_port}"
 
-  # bcrypt() is a native Terraform function -- no external htpasswd tool needed.
-  registry_htpasswd = "${var.registry_username}:${bcrypt(var.registry_password)}"
+  # bcrypt() is a native Terraform function -- no external htpasswd tool
+  # needed -- but it's non-deterministic: it generates a fresh random salt on
+  # every single evaluation, even for the same input password. Called
+  # directly in a local, that makes registry_htpasswd (and anything hashing
+  # it, like install_registry's triggers) recompute to a different value on
+  # every plan/apply forever, forcing a needless re-run every time. Routed
+  # through terraform_data with ignore_changes so the hash is computed once
+  # on creation and then frozen -- only replaced when var.registry_password
+  # itself changes (that's the point of the trigger below).
+  registry_htpasswd = "${var.registry_username}:${terraform_data.registry_htpasswd.output}"
 
   # TLS material for the registry (see tls.tf). Only the CA's public cert is
   # ever distributed to nodes -- the server key stays in this Secret alone.

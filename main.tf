@@ -314,6 +314,20 @@ resource "null_resource" "install_vsphere_csi" {
 # node currently holds the kube-vip VIP.
 # ---------------------------------------------------------------------------
 
+# bcrypt() is non-deterministic (fresh random salt every evaluation), which
+# would otherwise make local.registry_htpasswd -- and install_registry's
+# triggers below -- recompute to a different value on every single plan/
+# apply forever. Computed once here and frozen via ignore_changes; only
+# recomputed when var.registry_password itself actually changes.
+resource "terraform_data" "registry_htpasswd" {
+  input            = bcrypt(var.registry_password)
+  triggers_replace = var.registry_password
+
+  lifecycle {
+    ignore_changes = [input]
+  }
+}
+
 resource "null_resource" "install_registry" {
   depends_on = [null_resource.install_vsphere_csi]
 
