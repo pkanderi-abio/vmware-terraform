@@ -113,7 +113,13 @@ resource "null_resource" "wait_for_primary" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "10m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "10m"
   }
 
   provisioner "remote-exec" {
@@ -258,7 +264,13 @@ resource "null_resource" "install_vsphere_csi" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {
@@ -317,7 +329,13 @@ resource "null_resource" "install_registry" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {
@@ -368,7 +386,13 @@ resource "null_resource" "configure_registry_mirror_workers" {
     host        = var.worker_ip_addresses[tonumber(each.key)]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {
@@ -415,7 +439,13 @@ resource "null_resource" "configure_registry_mirror_cp0" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {
@@ -460,7 +490,13 @@ resource "null_resource" "configure_registry_mirror_cp1" {
     host        = var.control_plane_ip_addresses[1]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {
@@ -505,7 +541,13 @@ resource "null_resource" "configure_registry_mirror_cp2" {
     host        = var.control_plane_ip_addresses[2]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {
@@ -549,7 +591,13 @@ resource "null_resource" "install_metallb" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {
@@ -588,7 +636,13 @@ resource "null_resource" "install_helm" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "remote-exec" {
@@ -615,7 +669,13 @@ resource "null_resource" "install_kyverno" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "10m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "10m"
   }
 
   provisioner "file" {
@@ -648,7 +708,13 @@ resource "null_resource" "install_trivy_operator" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "10m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "10m"
   }
 
   provisioner "remote-exec" {
@@ -673,7 +739,13 @@ resource "null_resource" "install_falco" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "10m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "10m"
   }
 
   provisioner "remote-exec" {
@@ -708,7 +780,13 @@ resource "null_resource" "harden_ingress" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
-    timeout     = "5m"
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "5m"
   }
 
   provisioner "file" {

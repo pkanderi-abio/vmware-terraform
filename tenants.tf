@@ -195,6 +195,7 @@ resource "null_resource" "apply_tenant" {
     host        = var.control_plane_ip_addresses[0]
     user        = "ubuntu"
     private_key = file(var.ssh_private_key_path)
+    agent       = false
     timeout     = "5m"
   }
 
