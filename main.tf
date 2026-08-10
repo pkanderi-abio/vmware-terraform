@@ -584,7 +584,13 @@ resource "null_resource" "configure_registry_mirror_cp2" {
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "install_metallb" {
-  depends_on = [null_resource.install_vsphere_csi]
+  # See install_helm's comment further down -- same cp-0-restart race, same fix.
+  depends_on = [
+    null_resource.install_vsphere_csi,
+    null_resource.configure_registry_mirror_cp0,
+    null_resource.configure_registry_mirror_cp1,
+    null_resource.configure_registry_mirror_cp2,
+  ]
 
   connection {
     type        = "ssh"
@@ -629,7 +635,22 @@ resource "null_resource" "install_metallb" {
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "install_helm" {
-  depends_on = [null_resource.install_vsphere_csi]
+  # configure_registry_mirror_cp0/1/2 each restart rke2-server (and therefore
+  # that node's apiserver) on their target control-plane node. Every install_*
+  # resource below SSHes into cp-0 specifically to run kubectl/helm against
+  # its LOCAL apiserver (127.0.0.1:6443 via its kubeconfig) -- with no
+  # ordering against configure_registry_mirror_cp0, Terraform is free to run
+  # both in parallel, and one restarting cp-0's apiserver while the other is
+  # mid-`kubectl apply` against it produces exactly the "connection refused"
+  # failures this dependency exists to prevent. Waiting on all three (not
+  # just cp0) also avoids doing more cluster-wide installs during any
+  # control-plane node's restart-induced apiserver quorum disruption window.
+  depends_on = [
+    null_resource.install_vsphere_csi,
+    null_resource.configure_registry_mirror_cp0,
+    null_resource.configure_registry_mirror_cp1,
+    null_resource.configure_registry_mirror_cp2,
+  ]
 
   connection {
     type        = "ssh"
@@ -769,7 +790,13 @@ resource "null_resource" "install_falco" {
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "harden_ingress" {
-  depends_on = [null_resource.install_metallb]
+  # See install_helm's comment above -- same race, same fix.
+  depends_on = [
+    null_resource.install_metallb,
+    null_resource.configure_registry_mirror_cp0,
+    null_resource.configure_registry_mirror_cp1,
+    null_resource.configure_registry_mirror_cp2,
+  ]
 
   triggers = {
     config_hash = md5(local.ingress_waf_config_yaml)
