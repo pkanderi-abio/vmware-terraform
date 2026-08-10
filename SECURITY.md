@@ -51,7 +51,7 @@ Logical isolation by default (namespace + RBAC + ResourceQuota + LimitRange + Ne
 - Every credential-bearing file this repo's provisioners push to a node is now `chmod 600` on arrival and removed after use — see CLAUDE.md's Security & compliance section for the full list of what changed there.
 
 ### Ingress hardening
-`templates/ingress/waf-config.yaml` (applied via `null_resource.harden_ingress`): ModSecurity + OWASP Core Rule Set, connection/request rate limiting (`limit-connections`, `limit-rps`), forced HTTPS redirect, and defense-in-depth response headers (`X-Frame-Options`, `X-Content-Type-Options`, HSTS). **Not yet confirmed**: whether RKE2's specific ingress-nginx image build has `libmodsecurity` compiled in — check the controller pod's logs after this applies for a ModSecurity startup error before assuming it's active.
+`templates/ingress/waf-config.yaml` (applied via `null_resource.harden_ingress`): ModSecurity + OWASP Core Rule Set, connection/request rate limiting (`limit-connections`, `limit-rps`), forced HTTPS redirect, and defense-in-depth response headers (`X-Frame-Options`, `X-Content-Type-Options`, HSTS). **Confirmed working**: all 9 `rke2-ingress-nginx-controller` pods came up `1/1 Running` with zero restarts and no ModSecurity-related errors in their logs after this applied — RKE2's bundled ingress-nginx image does have `libmodsecurity` compiled in.
 
 ## What's NOT done (needs your decision or external action)
 
