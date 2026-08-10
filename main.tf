@@ -724,14 +724,16 @@ resource "null_resource" "install_kyverno" {
       "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
       "eval $HELM repo add kyverno https://kyverno.github.io/kyverno/",
       "eval $HELM repo update kyverno",
-      # An apply interrupted mid-install (e.g. the apiserver briefly dropping
-      # during the underlying etcd disk-latency incident -- see CLAUDE.md)
-      # leaves Helm's release tracking stuck in pending-install/pending-
-      # upgrade forever; every subsequent attempt fails with "another
-      # operation is in progress" until that's cleared. Self-heal it here
-      # rather than requiring a manual `helm uninstall` every time this apply
-      # gets interrupted, which is not a rare event on this cluster right now.
-      "eval $HELM status kyverno -n kyverno 2>/dev/null | grep -qE 'STATUS: (pending-|failed)' && eval $HELM uninstall kyverno -n kyverno; true",
+      # An apply interrupted mid-install/mid-uninstall (e.g. the apiserver
+      # briefly dropping during the underlying etcd disk-latency incident --
+      # see CLAUDE.md) leaves Helm's release tracking stuck (pending-install,
+      # pending-upgrade, or uninstalling) forever; every subsequent attempt
+      # fails until that's cleared -- and a release stuck in "uninstalling"
+      # specifically makes `helm uninstall` itself refuse to run ("failed to
+      # delete release"), so that's not a reliable first-line fix on its own.
+      # Try it, and if it fails, force-clear Helm's own release-tracking
+      # Secret directly -- observed necessary in practice, not theoretical.
+      "eval $HELM status kyverno -n kyverno 2>/dev/null | grep -qE 'STATUS: (pending-|failed|uninstalling|unknown)' && (eval $HELM uninstall kyverno -n kyverno || eval $KCTL delete secret -n kyverno -l owner=helm,name=kyverno); true",
       "eval $HELM upgrade --install kyverno kyverno/kyverno --namespace kyverno --create-namespace --version ${var.kyverno_chart_version} --wait --timeout 5m",
       "eval $KCTL apply -f /tmp/kyverno-baseline-policies.yaml",
       "rm -f /tmp/kyverno-baseline-policies.yaml",
@@ -763,10 +765,11 @@ resource "null_resource" "install_trivy_operator" {
   provisioner "remote-exec" {
     inline = [
       "HELM='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml helm'",
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
       "eval $HELM repo add aqua https://aquasecurity.github.io/helm-charts/",
       "eval $HELM repo update aqua",
       # See install_kyverno's comment above -- same self-heal, same reason.
-      "eval $HELM status trivy-operator -n trivy-system 2>/dev/null | grep -qE 'STATUS: (pending-|failed)' && eval $HELM uninstall trivy-operator -n trivy-system; true",
+      "eval $HELM status trivy-operator -n trivy-system 2>/dev/null | grep -qE 'STATUS: (pending-|failed|uninstalling|unknown)' && (eval $HELM uninstall trivy-operator -n trivy-system || eval $KCTL delete secret -n trivy-system -l owner=helm,name=trivy-operator); true",
       "eval $HELM upgrade --install trivy-operator aqua/trivy-operator --namespace trivy-system --create-namespace --version ${var.trivy_operator_chart_version} --set trivy.ignoreUnfixed=true --wait --timeout 5m",
     ]
   }
@@ -796,6 +799,7 @@ resource "null_resource" "install_falco" {
   provisioner "remote-exec" {
     inline = [
       "HELM='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml helm'",
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
       "eval $HELM repo add falcosecurity https://falcosecurity.github.io/charts",
       "eval $HELM repo update falcosecurity",
       # Modern eBPF driver -- no kernel module build/load required, works
@@ -803,7 +807,7 @@ resource "null_resource" "install_falco" {
       # 5.15+), avoiding the DKMS/driver-loader complexity of older Falco
       # deployment modes.
       # Self-heal, same reason as install_kyverno's comment above.
-      "eval $HELM status falco -n falco 2>/dev/null | grep -qE 'STATUS: (pending-|failed)' && eval $HELM uninstall falco -n falco; true",
+      "eval $HELM status falco -n falco 2>/dev/null | grep -qE 'STATUS: (pending-|failed|uninstalling|unknown)' && (eval $HELM uninstall falco -n falco || eval $KCTL delete secret -n falco -l owner=helm,name=falco); true",
       "eval $HELM upgrade --install falco falcosecurity/falco --namespace falco --create-namespace --version ${var.falco_chart_version} --set driver.kind=modern_ebpf --wait --timeout 5m",
     ]
   }
