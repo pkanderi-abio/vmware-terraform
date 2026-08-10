@@ -30,10 +30,19 @@ locals {
   # bcrypt() is a native Terraform function -- no external htpasswd tool needed.
   registry_htpasswd = "${var.registry_username}:${bcrypt(var.registry_password)}"
 
+  # TLS material for the registry (see tls.tf). Only the CA's public cert is
+  # ever distributed to nodes -- the server key stays in this Secret alone.
+  registry_tls_cert_b64 = base64encode(tls_locally_signed_cert.registry_server.cert_pem)
+  registry_tls_key_b64  = base64encode(tls_private_key.registry_server.private_key_pem)
+  registry_ca_cert_pem  = tls_self_signed_cert.registry_ca.cert_pem
+  registry_ca_cert_b64  = base64encode(local.registry_ca_cert_pem)
+
   registry_manifest_yaml = templatefile("${path.module}/templates/registry/registry.yaml.tpl", {
     storage_size     = var.registry_storage_size
     node_port        = var.registry_node_port
     htpasswd_content = local.registry_htpasswd
+    tls_cert_b64     = local.registry_tls_cert_b64
+    tls_key_b64      = local.registry_tls_key_b64
   })
 
   registries_config_yaml = templatefile("${path.module}/templates/registries.yaml.tpl", {
@@ -48,4 +57,11 @@ locals {
   metallb_config_yaml = templatefile("${path.module}/templates/metallb/config.yaml.tpl", {
     ip_range = var.metallb_ip_range
   })
+
+  # Installed via Helm (like Trivy-Operator and Falco below) rather than a
+  # static manifest URL -- unlike vsphere-csi-driver/MetalLB/kube-vip, none
+  # of these three publish a single kubectl-applyable install.yaml upstream.
+  kyverno_baseline_policies_yaml = file("${path.module}/templates/security/kyverno-baseline-policies.yaml")
+
+  ingress_waf_config_yaml = file("${path.module}/templates/ingress/waf-config.yaml")
 }

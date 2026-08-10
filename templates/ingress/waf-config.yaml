@@ -1,0 +1,55 @@
+# Hardens RKE2's bundled ingress-nginx via its HelmChartConfig override
+# mechanism (RKE2 deploys ingress-nginx through its own internal Helm
+# controller; this CR is how you inject values without replacing the addon
+# entirely). Applies cluster-wide to every Ingress behind this controller.
+#
+# NOT YET VERIFIED: whether RKE2's specific ingress-nginx image build has
+# libmodsecurity compiled in (upstream ingress-nginx's official image does;
+# RKE2 mirrors/rebuilds it and has historically carried the same feature set,
+# but that hasn't been directly confirmed against this cluster's exact image).
+# If the controller pod fails to come up healthy after this applies, check
+# its logs for a ModSecurity-related startup error first -- see SECURITY.md.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-ingress-nginx
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    controller:
+      config:
+        enable-modsecurity: "true"
+        enable-owasp-modsecurity-crs: "true"
+        modsecurity-snippet: |
+          SecRuleEngine On
+          SecRequestBodyAccess On
+          SecAuditEngine RelevantOnly
+          SecAuditLogParts ABIJDEFHZ
+        # Cluster-wide backstop against basic connection/request floods --
+        # not a substitute for DDoS protection at the network edge (a single
+        # ingress controller cannot absorb a real volumetric attack; see
+        # SECURITY.md), just a sane default so one misbehaving client can't
+        # exhaust every worker connection on its own.
+        limit-conn-zone-variable: "$binary_remote_addr"
+        limit-connections: "20"
+        limit-rps: "50"
+        limit-req-status-code: "429"
+        limit-conn-status-code: "429"
+        # Defense-in-depth response headers.
+        add-headers: "kube-system/ingress-security-headers"
+        hsts: "true"
+        hsts-max-age: "31536000"
+        hsts-include-subdomains: "true"
+        ssl-redirect: "true"
+        hide-headers: "Server,X-Powered-By"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-security-headers
+  namespace: kube-system
+data:
+  X-Frame-Options: "SAMEORIGIN"
+  X-Content-Type-Options: "nosniff"
+  X-XSS-Protection: "1; mode=block"
+  Referrer-Policy: "strict-origin-when-cross-origin"

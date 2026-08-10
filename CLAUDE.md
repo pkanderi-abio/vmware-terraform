@@ -129,6 +129,8 @@ A few production-readiness gaps were closed after the initial build, all additiv
 
 ## Security & compliance (CISA/NSA Kubernetes Hardening Guidance-aligned)
 
+**→ See [SECURITY.md](SECURITY.md) for the full posture**: admission control (Kyverno), vulnerability scanning (Trivy-Operator), runtime threat detection (Falco), registry TLS, multi-tenant RBAC/isolation, an OIDC authentication hook, ingress WAF/rate-limiting, and — critically — an honest checklist of what's still needed before this cluster should ever be exposed to the public internet. This section covers the initial pass; SECURITY.md is the living, complete document.
+
 A security/compliance pass against this repo found and fixed several gaps, cross-referenced against [CISA/NSA's Kubernetes Hardening Guidance](https://www.cisa.gov/resources-tools/resources/kubernetes-hardening-guidance) (which the RKE2 `cis` profile below is itself built to satisfy) and general NIST 800-53 control families (SC-8 transmission confidentiality, SC-28 protection at rest, AU-2 audit logging, AC-6 least privilege).
 
 **Fixed in code:**

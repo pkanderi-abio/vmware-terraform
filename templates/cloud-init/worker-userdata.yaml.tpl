@@ -30,6 +30,10 @@ write_files:
     permissions: '0600'
     encoding: b64
     content: ${registries_config_b64}
+  - path: /etc/rancher/rke2/registry-ca.crt
+    permissions: '0644'
+    encoding: b64
+    content: ${registry_ca_cert_b64}
 
 runcmd:
   - curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION=${rke2_version} INSTALL_RKE2_TYPE=agent sh -

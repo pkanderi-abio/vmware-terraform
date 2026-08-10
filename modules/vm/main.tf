@@ -79,6 +79,17 @@ resource "vsphere_virtual_machine" "this" {
   lifecycle {
     ignore_changes = [
       clone[0].template_uuid,
+      # Terraform cannot safely apply a changed extra_config to a VM in-place
+      # once RKE2/etcd is already running on it: cloud-init's per-instance
+      # write_files/runcmd stage never re-runs on an existing disk (so the
+      # new content wouldn't even take effect), and on a control-plane node
+      # specifically, an in-place guestinfo update can make etcd come back
+      # up believing it's a different member than the one etcd remembers --
+      # "not a member of the etcd cluster", looping forever. Rolling out a
+      # genuinely new extra_config onto an existing node is a deliberate,
+      # one-at-a-time `terraform apply -replace=<this resource address>`,
+      # never an in-place update -- see CLAUDE.md's etcd-identity rough edge.
+      extra_config,
     ]
   }
 }

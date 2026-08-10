@@ -43,6 +43,12 @@ write_files:
         - "audit-log-maxage=30"
         - "audit-log-maxbackup=10"
         - "audit-log-maxsize=100"
+%{ if oidc_issuer_url != "" ~}
+        - "oidc-issuer-url=${oidc_issuer_url}"
+        - "oidc-client-id=${oidc_client_id}"
+        - "oidc-username-claim=${oidc_username_claim}"
+        - "oidc-groups-claim=${oidc_groups_claim}"
+%{ endif ~}
 %{ if !is_primary ~}
       server: https://${control_plane_vip}:9345
 %{ endif ~}
@@ -77,6 +83,10 @@ write_files:
     permissions: '0600'
     encoding: b64
     content: ${registries_config_b64}
+  - path: /etc/rancher/rke2/registry-ca.crt
+    permissions: '0644'
+    encoding: b64
+    content: ${registry_ca_cert_b64}
 
 runcmd:
   - mkdir -p /var/lib/rancher/rke2/server/logs

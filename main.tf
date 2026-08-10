@@ -94,6 +94,11 @@ module "control_plane_primary" {
     etcd_snapshot_schedule_cron = var.etcd_snapshot_schedule_cron
     etcd_snapshot_retention     = var.etcd_snapshot_retention
     cis_profile                 = var.rke2_cis_profile
+    registry_ca_cert_b64        = local.registry_ca_cert_b64
+    oidc_issuer_url             = var.oidc_issuer_url
+    oidc_client_id              = var.oidc_client_id
+    oidc_username_claim         = var.oidc_username_claim
+    oidc_groups_claim           = var.oidc_groups_claim
   })
 }
 
@@ -169,6 +174,11 @@ module "control_plane_secondary" {
     etcd_snapshot_schedule_cron = var.etcd_snapshot_schedule_cron
     etcd_snapshot_retention     = var.etcd_snapshot_retention
     cis_profile                 = var.rke2_cis_profile
+    registry_ca_cert_b64        = local.registry_ca_cert_b64
+    oidc_issuer_url             = var.oidc_issuer_url
+    oidc_client_id              = var.oidc_client_id
+    oidc_username_claim         = var.oidc_username_claim
+    oidc_groups_claim           = var.oidc_groups_claim
   })
 
   depends_on = [null_resource.wait_for_primary]
@@ -229,6 +239,7 @@ module "workers" {
     control_plane_vip     = var.control_plane_vip
     registries_config_b64 = local.registries_config_yaml_b64
     cis_profile           = var.rke2_cis_profile
+    registry_ca_cert_b64  = local.registry_ca_cert_b64
   })
 
   depends_on = [null_resource.wait_for_primary]
@@ -284,15 +295,22 @@ resource "null_resource" "install_vsphere_csi" {
 }
 
 # ---------------------------------------------------------------------------
-# In-cluster image registry: registry:2 with htpasswd basic auth, backed by a
-# vsphere-csi PVC. Nodes pull from it as http://<control_plane_vip>:<node_port>
-# -- NodePort is exposed by kube-proxy on every node, so this works regardless
-# of which node currently holds the kube-vip VIP. Plain HTTP, no TLS -- fine
-# only because this network is itself access-controlled.
+# In-cluster image registry: registry:2 with htpasswd basic auth, TLS (see
+# tls.tf for the internal CA + server cert), backed by a vsphere-csi PVC.
+# Nodes pull from it as https://<control_plane_vip>:<node_port> -- NodePort
+# is exposed by kube-proxy on every node, so this works regardless of which
+# node currently holds the kube-vip VIP.
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "install_registry" {
   depends_on = [null_resource.install_vsphere_csi]
+
+  # Without this, changing registry.yaml.tpl (e.g. adding TLS) would never
+  # re-apply against a cluster this resource already succeeded on -- same
+  # stale-push lesson as the configure_registry_mirror_* resources below.
+  triggers = {
+    manifest_hash = md5(local.registry_manifest_yaml)
+  }
 
   connection {
     type        = "ssh"
@@ -338,10 +356,11 @@ resource "null_resource" "configure_registry_mirror_workers" {
   # has no other way to detect that the *rendered file* changed underneath it.
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    ca_hash     = md5(local.registry_ca_cert_pem)
     # Bump this when the provisioner script itself changes (not just the
     # content it pushes) -- config_hash alone can't detect that, and a stale
     # push otherwise silently leaves already-provisioned nodes unpatched.
-    script_version = "2"
+    script_version = "3"
   }
 
   connection {
@@ -357,6 +376,11 @@ resource "null_resource" "configure_registry_mirror_workers" {
     destination = "/tmp/registries.yaml"
   }
 
+  provisioner "file" {
+    content     = local.registry_ca_cert_pem
+    destination = "/tmp/registry-ca.crt"
+  }
+
   provisioner "remote-exec" {
     inline = [
       # Carries the registry's plaintext password (see registries.yaml.tpl's
@@ -364,8 +388,10 @@ resource "null_resource" "configure_registry_mirror_workers" {
       "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
       "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
       "sudo systemctl restart rke2-agent",
-      "rm -f /tmp/registries.yaml",
+      "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
 }
@@ -377,10 +403,11 @@ resource "null_resource" "configure_registry_mirror_cp0" {
 
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    ca_hash     = md5(local.registry_ca_cert_pem)
     # Bump this when the provisioner script itself changes (not just the
     # content it pushes) -- config_hash alone can't detect that, and a stale
     # push otherwise silently leaves already-provisioned nodes unpatched.
-    script_version = "2"
+    script_version = "3"
   }
 
   connection {
@@ -396,6 +423,11 @@ resource "null_resource" "configure_registry_mirror_cp0" {
     destination = "/tmp/registries.yaml"
   }
 
+  provisioner "file" {
+    content     = local.registry_ca_cert_pem
+    destination = "/tmp/registry-ca.crt"
+  }
+
   provisioner "remote-exec" {
     inline = [
       # Carries the registry's plaintext password (see registries.yaml.tpl's
@@ -403,8 +435,10 @@ resource "null_resource" "configure_registry_mirror_cp0" {
       "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
       "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
       "sudo systemctl restart rke2-server",
-      "rm -f /tmp/registries.yaml",
+      "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
 }
@@ -414,10 +448,11 @@ resource "null_resource" "configure_registry_mirror_cp1" {
 
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    ca_hash     = md5(local.registry_ca_cert_pem)
     # Bump this when the provisioner script itself changes (not just the
     # content it pushes) -- config_hash alone can't detect that, and a stale
     # push otherwise silently leaves already-provisioned nodes unpatched.
-    script_version = "2"
+    script_version = "3"
   }
 
   connection {
@@ -433,6 +468,11 @@ resource "null_resource" "configure_registry_mirror_cp1" {
     destination = "/tmp/registries.yaml"
   }
 
+  provisioner "file" {
+    content     = local.registry_ca_cert_pem
+    destination = "/tmp/registry-ca.crt"
+  }
+
   provisioner "remote-exec" {
     inline = [
       # Carries the registry's plaintext password (see registries.yaml.tpl's
@@ -440,8 +480,10 @@ resource "null_resource" "configure_registry_mirror_cp1" {
       "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
       "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
       "sudo systemctl restart rke2-server",
-      "rm -f /tmp/registries.yaml",
+      "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
 }
@@ -451,10 +493,11 @@ resource "null_resource" "configure_registry_mirror_cp2" {
 
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    ca_hash     = md5(local.registry_ca_cert_pem)
     # Bump this when the provisioner script itself changes (not just the
     # content it pushes) -- config_hash alone can't detect that, and a stale
     # push otherwise silently leaves already-provisioned nodes unpatched.
-    script_version = "2"
+    script_version = "3"
   }
 
   connection {
@@ -470,6 +513,11 @@ resource "null_resource" "configure_registry_mirror_cp2" {
     destination = "/tmp/registries.yaml"
   }
 
+  provisioner "file" {
+    content     = local.registry_ca_cert_pem
+    destination = "/tmp/registry-ca.crt"
+  }
+
   provisioner "remote-exec" {
     inline = [
       # Carries the registry's plaintext password (see registries.yaml.tpl's
@@ -477,8 +525,10 @@ resource "null_resource" "configure_registry_mirror_cp2" {
       "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
       "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
       "sudo systemctl restart rke2-server",
-      "rm -f /tmp/registries.yaml",
+      "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
 }
@@ -517,6 +567,160 @@ resource "null_resource" "install_metallb" {
       # "rollout complete" to actually start accepting connections -- retry
       # rather than fail on the first attempt.
       "for i in $(seq 1 12); do eval $KCTL apply -f /tmp/metallb-config.yaml && break; sleep 5; done",
+    ]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Security tooling: Kyverno (policy-as-code admission control), Trivy-Operator
+# (continuous in-cluster vulnerability scanning), Falco (runtime/syscall-level
+# threat detection). None of the three publish a single kubectl-applyable
+# manifest upstream the way vsphere-csi-driver/MetalLB/kube-vip do above, so
+# Helm is installed once on the primary control-plane node and reused for
+# all three rather than mixing install patterns.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "install_helm" {
+  depends_on = [null_resource.install_vsphere_csi]
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "which helm || curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
+    ]
+  }
+}
+
+resource "null_resource" "install_kyverno" {
+  depends_on = [null_resource.install_helm]
+
+  # Re-run when the pinned chart version changes or the baseline policy set
+  # itself changes -- Helm's own idempotency handles the chart install/
+  # upgrade either way, but the ClusterPolicy apply needs the same
+  # stale-push protection as everything else in this file.
+  triggers = {
+    chart_version = var.kyverno_chart_version
+    policies_hash = md5(local.kyverno_baseline_policies_yaml)
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "10m"
+  }
+
+  provisioner "file" {
+    content     = local.kyverno_baseline_policies_yaml
+    destination = "/tmp/kyverno-baseline-policies.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "HELM='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml helm'",
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      "eval $HELM repo add kyverno https://kyverno.github.io/kyverno/",
+      "eval $HELM repo update kyverno",
+      "eval $HELM upgrade --install kyverno kyverno/kyverno --namespace kyverno --create-namespace --version ${var.kyverno_chart_version} --wait --timeout 5m",
+      "eval $KCTL apply -f /tmp/kyverno-baseline-policies.yaml",
+      "rm -f /tmp/kyverno-baseline-policies.yaml",
+    ]
+  }
+}
+
+resource "null_resource" "install_trivy_operator" {
+  depends_on = [null_resource.install_helm]
+
+  triggers = {
+    chart_version = var.trivy_operator_chart_version
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "10m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "HELM='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml helm'",
+      "eval $HELM repo add aqua https://aquasecurity.github.io/helm-charts/",
+      "eval $HELM repo update aqua",
+      "eval $HELM upgrade --install trivy-operator aqua/trivy-operator --namespace trivy-system --create-namespace --version ${var.trivy_operator_chart_version} --set trivy.ignoreUnfixed=true --wait --timeout 5m",
+    ]
+  }
+}
+
+resource "null_resource" "install_falco" {
+  depends_on = [null_resource.install_helm]
+
+  triggers = {
+    chart_version = var.falco_chart_version
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "10m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "HELM='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml helm'",
+      "eval $HELM repo add falcosecurity https://falcosecurity.github.io/charts",
+      "eval $HELM repo update falcosecurity",
+      # Modern eBPF driver -- no kernel module build/load required, works
+      # out of the box on kernel >= 5.8 (this template's Ubuntu 22.04 ships
+      # 5.15+), avoiding the DKMS/driver-loader complexity of older Falco
+      # deployment modes.
+      "eval $HELM upgrade --install falco falcosecurity/falco --namespace falco --create-namespace --version ${var.falco_chart_version} --set driver.kind=modern_ebpf --wait --timeout 5m",
+    ]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Ingress hardening: WAF (ModSecurity + OWASP CRS), rate limiting, security
+# response headers, forced HTTPS. Applies cluster-wide to every Ingress
+# behind RKE2's bundled ingress-nginx via its HelmChartConfig override.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "harden_ingress" {
+  depends_on = [null_resource.install_metallb]
+
+  triggers = {
+    config_hash = md5(local.ingress_waf_config_yaml)
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.ingress_waf_config_yaml
+    destination = "/tmp/ingress-waf-config.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      "eval $KCTL apply -f /tmp/ingress-waf-config.yaml",
+      "rm -f /tmp/ingress-waf-config.yaml",
     ]
   }
 }

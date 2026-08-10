@@ -65,6 +65,7 @@ flowchart TB
 | 📦 **In-cluster registry** | `registry:2` with basic auth, reachable from every node via the control-plane VIP, for custom/mirrored images |
 | 🏢 **Enterprise-hardened** | DRS anti-affinity across hosts, etcd snapshots, resource reservations, vSphere tagging, security-scanned CI |
 | 🌐 **LoadBalancer Services** | MetalLB (L2/ARP, same mechanism as the control-plane VIP) gives ingress-nginx — and any future Service — a real floating IP |
+| 🛡️ **Defense-in-depth security** | Kyverno admission control, Trivy vulnerability scanning, Falco runtime detection, TLS internal registry, WAF/rate-limited ingress, opt-in multi-tenant RBAC — see [SECURITY.md](SECURITY.md) |
 | 📈 **Scales with a variable** | `worker_count` — no forking the config to add capacity |
 
 ## Quick start
@@ -120,6 +121,7 @@ kubectl get nodes
 | 📄 [RFC-001: HA RKE2 on vSphere](docs/rfc/0001-ha-rke2-on-vsphere.md) | Why this design — motivation, alternatives considered, tradeoffs |
 | 📐 [Architecture & Design](docs/design/architecture.md) | How it fits together — sequence diagrams, module structure |
 | 🤖 [CLAUDE.md](CLAUDE.md) | Prerequisites checklist, commands, and every hard-won operational gotcha |
+| 🛡️ [SECURITY.md](SECURITY.md) | Full security posture, admission control/scanning/runtime detection, multi-tenancy, and an honest public-internet-readiness checklist |
 
 ## Known limitations
 

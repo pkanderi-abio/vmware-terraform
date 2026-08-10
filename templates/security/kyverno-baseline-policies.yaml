@@ -1,0 +1,141 @@
+# Baseline Pod Security policies (CISA/NSA Kubernetes Hardening Guidance +
+# Kubernetes Pod Security Standards "baseline" profile), enforced via Kyverno.
+#
+# All four start in Audit mode deliberately: this cluster already has running
+# workloads whose compliance with these rules is unknown, and flipping
+# straight to Enforce could break them without warning. PolicyReports will
+# show every current violation across the cluster -- review those, then
+# switch specific policies to Enforce one at a time once you've confirmed
+# nothing legitimate breaks. See SECURITY.md for the rollout procedure.
+#
+# kube-system, vmware-system-csi, and metallb-system are excluded from the
+# privileged/root checks because their real workloads legitimately need
+# those permissions (kube-vip and MetalLB's speaker need hostNetwork +
+# NET_ADMIN/NET_RAW for ARP; the CSI node plugin needs privileged to manage
+# host mounts) -- this is the same exemption pattern CISA's own guidance
+# describes for CNI/CSI/system components, not a blanket carve-out.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-containers
+  annotations:
+    policies.kyverno.io/title: Disallow Privileged Containers
+    policies.kyverno.io/category: Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: privileged-containers
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kube-system", "vmware-system-csi", "metallb-system"]
+      validate:
+        message: "Privileged containers are not allowed outside system namespaces."
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+            =(initContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-run-as-non-root
+  annotations:
+    policies.kyverno.io/title: Require runAsNonRoot
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kube-system", "vmware-system-csi", "metallb-system"]
+      validate:
+        message: "Containers must set securityContext.runAsNonRoot: true."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  runAsNonRoot: "true"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow Latest Tag
+    policies.kyverno.io/category: Supply Chain
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      validate:
+        message: "Images must specify an explicit, non-'latest' tag -- floating tags make it impossible to know what's actually running or to roll back deterministically."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ contains(element.image, ':') }}"
+                    operator: Equals
+                    value: false
+                  - key: "{{ ends_with(element.image, ':latest') }}"
+                    operator: Equals
+                    value: true
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require CPU/Memory Limits
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: low
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-limits
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kube-system", "vmware-system-csi", "metallb-system"]
+      validate:
+        message: "Containers must set CPU and memory limits -- an unbounded container can starve every other workload on its node, including this cluster's own control-plane components if scheduled onto a control-plane node."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  limits:
+                    memory: "?*"
+                    cpu: "?*"

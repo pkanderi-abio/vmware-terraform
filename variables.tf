@@ -206,6 +206,100 @@ variable "vsphere_csi_driver_version" {
   default     = "v3.7.2"
 }
 
+variable "kyverno_chart_version" {
+  description = "kyverno/kyverno Helm chart version -- policy-as-code admission control (CISA/NSA guidance: 'Use admission control'). Confirm against https://kyverno.github.io/kyverno/ before changing."
+  type        = string
+  default     = "3.8.2"
+}
+
+variable "trivy_operator_chart_version" {
+  description = "aquasecurity/trivy-operator Helm chart version -- continuous in-cluster image/config vulnerability scanning."
+  type        = string
+  default     = "0.35.0"
+}
+
+variable "falco_chart_version" {
+  description = "falcosecurity/falco Helm chart version -- runtime (syscall-level) threat detection. Uses the modern eBPF driver (no kernel module build/load needed on kernel >= 5.8)."
+  type        = string
+  default     = "9.1.0"
+}
+
+variable "oidc_issuer_url" {
+  description = <<-EOT
+    OIDC issuer URL for real user authentication against the API server (the
+    `admin_subjects` in var.tenants are only meaningful once users actually
+    authenticate as something other than the shared kubeconfig admin cert --
+    RBAC without this is authorization with no real authentication behind
+    it). Left empty by default: this repo doesn't pick an identity provider
+    for you. Point it at an existing corporate IdP (Okta/Azure AD/Google
+    Workspace all support OIDC directly), or deploy Dex
+    (https://github.com/dexidp/dex, CNCF, open source) in-cluster first if
+    you want a self-contained option with pluggable backends (LDAP, GitHub,
+    SAML, static users for a quick start). Takes effect on fresh
+    control-plane nodes only, same as every other config.yaml setting.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "oidc_client_id" {
+  description = "OIDC client ID registered with the issuer above. Ignored if oidc_issuer_url is empty."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_username_claim" {
+  description = "OIDC claim mapped to the Kubernetes username (RBAC subject name)."
+  type        = string
+  default     = "email"
+}
+
+variable "oidc_groups_claim" {
+  description = "OIDC claim mapped to Kubernetes groups -- lets you bind var.tenants admin_subjects to an IdP group instead of individual users."
+  type        = string
+  default     = "groups"
+}
+
+variable "tenants" {
+  description = <<-EOT
+    Multi-tenant isolation. Each key becomes a `tenant-<key>` Namespace with:
+    a ResourceQuota/LimitRange, a `tenant-admin` Role scoped to that namespace
+    (deliberately excluding ResourceQuota/LimitRange/NetworkPolicy/Role edits,
+    so a tenant admin can't loosen their own isolation boundary or escalate
+    privilege), a RoleBinding to `admin_subjects`, and default-deny
+    NetworkPolicies (intra-tenant traffic allowed, cross-tenant denied, DNS
+    egress allowed). This is LOGICAL isolation -- the same model GKE/EKS
+    multi-tenant setups typically use in production.
+
+    Set `dedicated_node_names` (must be names from control_plane_ip_addresses'
+    worker equivalents, i.e. existing rke2-lab-worker-N nodes) for PHYSICAL
+    isolation on top of that: those nodes get tainted/labeled for this tenant
+    alone, and a generated Kyverno mutation policy auto-injects the matching
+    nodeSelector/toleration into every pod created in that tenant's namespace,
+    so tenant workloads land only on their own dedicated hardware without
+    relying on the tenant admin to remember to ask for it. Costs real spare
+    worker capacity -- there is no separate tenant-only VM pool provisioned
+    by this variable, it repurposes existing workers you name explicitly.
+
+    Defaults to an empty map: adding this variable to the repo does not
+    change the live cluster's behavior at all until you actually declare a
+    tenant in terraform.tfvars.
+  EOT
+  type = map(object({
+    admin_subjects = list(object({
+      kind      = string # "User", "Group", or "ServiceAccount"
+      name      = string
+      namespace = optional(string) # required, and only meaningful, for kind = "ServiceAccount"
+    }))
+    cpu_limit            = optional(string, "8")
+    memory_limit         = optional(string, "16Gi")
+    storage_limit        = optional(string, "100Gi")
+    pod_limit            = optional(number, 50)
+    dedicated_node_names = optional(list(string), [])
+  }))
+  default = {}
+}
+
 variable "rke2_cis_profile" {
   description = <<-EOT
     Enables RKE2's built-in `profile: cis` mode (kubelet protect-kernel-defaults,

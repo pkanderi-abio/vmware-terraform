@@ -64,6 +64,32 @@ vsphere_csi_driver_version = "v3.7.2"
 # flipping this on an already-running cluster.
 rke2_cis_profile = false
 
+# Security tooling versions -- see SECURITY.md for what each does and
+# https://kyverno.github.io/kyverno/ / https://aquasecurity.github.io/helm-charts/
+# / https://falcosecurity.github.io/charts for current releases before changing.
+kyverno_chart_version        = "3.8.2"
+trivy_operator_chart_version = "0.35.0"
+falco_chart_version          = "9.1.0"
+
+# OIDC authentication hook -- empty by default (no identity provider forced
+# on you). See SECURITY.md's "Authentication hook" section before setting.
+# oidc_issuer_url      = "https://your-idp.example.com"
+# oidc_client_id       = "kubernetes"
+# oidc_username_claim  = "email"
+# oidc_groups_claim    = "groups"
+
+# Multi-tenant isolation -- empty by default (no-op against the live
+# cluster). See SECURITY.md's "Multi-tenancy" section and the var.tenants
+# description in variables.tf for the full model before declaring one.
+# tenants = {
+#   acme = {
+#     admin_subjects = [
+#       { kind = "Group", name = "acme-admins" }
+#     ]
+#     dedicated_node_names = []  # set to existing worker names for physical isolation
+#   }
+# }
+
 # In-cluster registry:2, reachable at http://<control_plane_vip>:<registry_node_port>.
 registry_node_port    = 30500
 registry_storage_size = "50Gi"
