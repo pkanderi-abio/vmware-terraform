@@ -93,6 +93,7 @@ module "control_plane_primary" {
     registries_config_b64       = local.registries_config_yaml_b64
     etcd_snapshot_schedule_cron = var.etcd_snapshot_schedule_cron
     etcd_snapshot_retention     = var.etcd_snapshot_retention
+    cis_profile                 = var.rke2_cis_profile
   })
 }
 
@@ -167,6 +168,7 @@ module "control_plane_secondary" {
     registries_config_b64       = local.registries_config_yaml_b64
     etcd_snapshot_schedule_cron = var.etcd_snapshot_schedule_cron
     etcd_snapshot_retention     = var.etcd_snapshot_retention
+    cis_profile                 = var.rke2_cis_profile
   })
 
   depends_on = [null_resource.wait_for_primary]
@@ -226,6 +228,7 @@ module "workers" {
     rke2_version          = var.rke2_version
     control_plane_vip     = var.control_plane_vip
     registries_config_b64 = local.registries_config_yaml_b64
+    cis_profile           = var.rke2_cis_profile
   })
 
   depends_on = [null_resource.wait_for_primary]
@@ -259,6 +262,10 @@ resource "null_resource" "install_vsphere_csi" {
 
   provisioner "remote-exec" {
     inline = [
+      # The uploaded file carries a plaintext vCenter password (see the CSI
+      # secret template) -- restrict it before anything else touches the node,
+      # and remove it once applied rather than leaving credentials on disk.
+      "chmod 600 /tmp/csi-vsphere-config-secret.yaml",
       "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
       "eval $KCTL apply -f ${local.csi_namespace_manifest_url}",
       "eval $KCTL apply -f /tmp/csi-vsphere-config-secret.yaml",
@@ -270,6 +277,8 @@ resource "null_resource" "install_vsphere_csi" {
       # StorageClasses marked default is ambiguous, so demote it in favor of
       # the vSphere-backed one set up above.
       "eval $KCTL patch storageclass local-path -p '{\"metadata\": {\"annotations\":{\"storageclass.kubernetes.io/is-default-class\":\"false\"}}}' || true",
+      "shred -u /tmp/csi-vsphere-config-secret.yaml 2>/dev/null || rm -f /tmp/csi-vsphere-config-secret.yaml",
+      "rm -f /tmp/csi-vsphere-storageclass.yaml",
     ]
   }
 }
@@ -300,9 +309,12 @@ resource "null_resource" "install_registry" {
 
   provisioner "remote-exec" {
     inline = [
+      # Carries the registry's bcrypt htpasswd -- restrict and clean up.
+      "chmod 600 /tmp/registry.yaml",
       "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
       "eval $KCTL apply -f /tmp/registry.yaml",
       "eval $KCTL -n registry rollout status deployment/registry --timeout=5m",
+      "rm -f /tmp/registry.yaml",
     ]
   }
 }
@@ -326,6 +338,10 @@ resource "null_resource" "configure_registry_mirror_workers" {
   # has no other way to detect that the *rendered file* changed underneath it.
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    # Bump this when the provisioner script itself changes (not just the
+    # content it pushes) -- config_hash alone can't detect that, and a stale
+    # push otherwise silently leaves already-provisioned nodes unpatched.
+    script_version = "2"
   }
 
   connection {
@@ -343,8 +359,13 @@ resource "null_resource" "configure_registry_mirror_workers" {
 
   provisioner "remote-exec" {
     inline = [
+      # Carries the registry's plaintext password (see registries.yaml.tpl's
+      # configs.auth block) -- restrict before it lands, clean up after.
+      "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
       "sudo systemctl restart rke2-agent",
+      "rm -f /tmp/registries.yaml",
     ]
   }
 }
@@ -356,6 +377,10 @@ resource "null_resource" "configure_registry_mirror_cp0" {
 
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    # Bump this when the provisioner script itself changes (not just the
+    # content it pushes) -- config_hash alone can't detect that, and a stale
+    # push otherwise silently leaves already-provisioned nodes unpatched.
+    script_version = "2"
   }
 
   connection {
@@ -373,8 +398,13 @@ resource "null_resource" "configure_registry_mirror_cp0" {
 
   provisioner "remote-exec" {
     inline = [
+      # Carries the registry's plaintext password (see registries.yaml.tpl's
+      # configs.auth block) -- restrict before it lands, clean up after.
+      "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
       "sudo systemctl restart rke2-server",
+      "rm -f /tmp/registries.yaml",
     ]
   }
 }
@@ -384,6 +414,10 @@ resource "null_resource" "configure_registry_mirror_cp1" {
 
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    # Bump this when the provisioner script itself changes (not just the
+    # content it pushes) -- config_hash alone can't detect that, and a stale
+    # push otherwise silently leaves already-provisioned nodes unpatched.
+    script_version = "2"
   }
 
   connection {
@@ -401,8 +435,13 @@ resource "null_resource" "configure_registry_mirror_cp1" {
 
   provisioner "remote-exec" {
     inline = [
+      # Carries the registry's plaintext password (see registries.yaml.tpl's
+      # configs.auth block) -- restrict before it lands, clean up after.
+      "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
       "sudo systemctl restart rke2-server",
+      "rm -f /tmp/registries.yaml",
     ]
   }
 }
@@ -412,6 +451,10 @@ resource "null_resource" "configure_registry_mirror_cp2" {
 
   triggers = {
     config_hash = md5(local.registries_config_yaml)
+    # Bump this when the provisioner script itself changes (not just the
+    # content it pushes) -- config_hash alone can't detect that, and a stale
+    # push otherwise silently leaves already-provisioned nodes unpatched.
+    script_version = "2"
   }
 
   connection {
@@ -429,8 +472,13 @@ resource "null_resource" "configure_registry_mirror_cp2" {
 
   provisioner "remote-exec" {
     inline = [
+      # Carries the registry's plaintext password (see registries.yaml.tpl's
+      # configs.auth block) -- restrict before it lands, clean up after.
+      "chmod 600 /tmp/registries.yaml",
       "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
       "sudo systemctl restart rke2-server",
+      "rm -f /tmp/registries.yaml",
     ]
   }
 }

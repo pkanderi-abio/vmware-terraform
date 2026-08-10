@@ -58,6 +58,12 @@ etcd_snapshot_retention     = 10
 # your vCenter/ESXi version before changing: https://github.com/kubernetes-sigs/vsphere-csi-driver
 vsphere_csi_driver_version = "v3.7.2"
 
+# Opt-in RKE2 "cis" profile (kubelet protect-kernel-defaults, restricted
+# PSA-aligned defaults) -- CISA/NSA Kubernetes Hardening Guidance alignment.
+# Only takes effect on fresh nodes; see the variable description before
+# flipping this on an already-running cluster.
+rke2_cis_profile = false
+
 # In-cluster registry:2, reachable at http://<control_plane_vip>:<registry_node_port>.
 registry_node_port    = 30500
 registry_storage_size = "50Gi"

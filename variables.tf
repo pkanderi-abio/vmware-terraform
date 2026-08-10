@@ -206,6 +206,22 @@ variable "vsphere_csi_driver_version" {
   default     = "v3.7.2"
 }
 
+variable "rke2_cis_profile" {
+  description = <<-EOT
+    Enables RKE2's built-in `profile: cis` mode (kubelet protect-kernel-defaults,
+    restricted PSA-aligned defaults, etc.) -- RKE2's own mapping of the CIS
+    Kubernetes Benchmark, which CISA/NSA's Kubernetes Hardening Guidance is
+    itself largely built on. Defaults to false so enabling it is a deliberate
+    opt-in, not a silent behavior change: it can affect what already-running
+    workloads are permitted to do (e.g. hostNetwork/privileged pods), and like
+    every other setting in config.yaml it only takes effect on a genuinely
+    fresh node -- see the etcd-identity rough edge in CLAUDE.md before ever
+    flipping this on an already-bootstrapped cluster via extra_config alone.
+  EOT
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # In-cluster image registry
 # -----------------------------------------------------------------------------

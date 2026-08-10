@@ -5,6 +5,12 @@ on:
     branches: [master]
   pull_request:
 
+# Least-privilege default: neither job needs to write anything back to the
+# repo or call other APIs, so the GITHUB_TOKEN gets read-only checkout access
+# and nothing else, regardless of org/repo-level token defaults.
+permissions:
+  contents: read
+
 jobs:
   validate:
     name: fmt & validate
