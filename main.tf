@@ -259,6 +259,15 @@ module "workers" {
 resource "null_resource" "install_vsphere_csi" {
   depends_on = [module.control_plane_secondary, module.workers]
 
+  # Bump when the provisioner script itself changes -- this resource has no
+  # content to hash (it applies pinned upstream manifest URLs), so without
+  # an explicit version marker a script-only fix (e.g. adding failure
+  # propagation) would never re-run against a cluster this already
+  # "succeeded" against, silently leaving it on the old broken script.
+  triggers = {
+    script_version = "2"
+  }
+
   connection {
     type        = "ssh"
     host        = var.control_plane_ip_addresses[0]
@@ -344,7 +353,8 @@ resource "null_resource" "install_registry" {
   # re-apply against a cluster this resource already succeeded on -- same
   # stale-push lesson as the configure_registry_mirror_* resources below.
   triggers = {
-    manifest_hash = md5(local.registry_manifest_yaml)
+    manifest_hash  = md5(local.registry_manifest_yaml)
+    script_version = "2"
   }
 
   connection {
@@ -616,6 +626,12 @@ resource "null_resource" "install_metallb" {
     null_resource.configure_registry_mirror_cp2,
   ]
 
+  # See install_vsphere_csi's comment on why this exists.
+  triggers = {
+    config_hash    = md5(local.metallb_config_yaml)
+    script_version = "2"
+  }
+
   connection {
     type        = "ssh"
     host        = var.control_plane_ip_addresses[0]
@@ -711,8 +727,9 @@ resource "null_resource" "install_kyverno" {
   # upgrade either way, but the ClusterPolicy apply needs the same
   # stale-push protection as everything else in this file.
   triggers = {
-    chart_version = var.kyverno_chart_version
-    policies_hash = md5(local.kyverno_baseline_policies_yaml)
+    chart_version  = var.kyverno_chart_version
+    policies_hash  = md5(local.kyverno_baseline_policies_yaml)
+    script_version = "2"
   }
 
   connection {
@@ -849,7 +866,8 @@ resource "null_resource" "harden_ingress" {
   ]
 
   triggers = {
-    config_hash = md5(local.ingress_waf_config_yaml)
+    config_hash    = md5(local.ingress_waf_config_yaml)
+    script_version = "2"
   }
 
   connection {
