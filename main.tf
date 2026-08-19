@@ -290,15 +290,24 @@ resource "null_resource" "install_vsphere_csi" {
       # and remove it once applied rather than leaving credentials on disk.
       "chmod 600 /tmp/csi-vsphere-config-secret.yaml",
       "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
-      "eval $KCTL apply -f ${local.csi_namespace_manifest_url}",
-      "eval $KCTL apply -f /tmp/csi-vsphere-config-secret.yaml",
-      "eval $KCTL apply -f ${local.csi_driver_manifest_url}",
-      "eval $KCTL -n vmware-system-csi rollout status deployment/vsphere-csi-controller --timeout=5m",
-      "eval $KCTL -n vmware-system-csi rollout status daemonset/vsphere-csi-node --timeout=5m",
-      "eval $KCTL apply -f /tmp/csi-vsphere-storageclass.yaml",
+      # Explicit failure propagation on every step that actually matters --
+      # this script's last commands (a best-effort storageclass patch, then
+      # cleanup) always succeed regardless of what came before, so without
+      # this a mid-script kubectl failure (e.g. the apiserver briefly
+      # refusing connections during the underlying storage incident) would
+      # let Terraform report success on the single most foundational
+      # resource in this cluster while CSI was actually never installed.
+      "eval $KCTL apply -f ${local.csi_namespace_manifest_url} || exit 1",
+      "eval $KCTL apply -f /tmp/csi-vsphere-config-secret.yaml || exit 1",
+      "eval $KCTL apply -f ${local.csi_driver_manifest_url} || exit 1",
+      "eval $KCTL -n vmware-system-csi rollout status deployment/vsphere-csi-controller --timeout=5m || exit 1",
+      "eval $KCTL -n vmware-system-csi rollout status daemonset/vsphere-csi-node --timeout=5m || exit 1",
+      "eval $KCTL apply -f /tmp/csi-vsphere-storageclass.yaml || exit 1",
       # RKE2 ships its own default "local-path" StorageClass; having two
       # StorageClasses marked default is ambiguous, so demote it in favor of
-      # the vSphere-backed one set up above.
+      # the vSphere-backed one set up above. Genuinely best-effort (fine if
+      # local-path doesn't exist or is already demoted), unlike everything
+      # above this line.
       "eval $KCTL patch storageclass local-path -p '{\"metadata\": {\"annotations\":{\"storageclass.kubernetes.io/is-default-class\":\"false\"}}}' || true",
       "shred -u /tmp/csi-vsphere-config-secret.yaml 2>/dev/null || rm -f /tmp/csi-vsphere-config-secret.yaml",
       "rm -f /tmp/csi-vsphere-storageclass.yaml",
@@ -362,8 +371,9 @@ resource "null_resource" "install_registry" {
       # Carries the registry's bcrypt htpasswd -- restrict and clean up.
       "chmod 600 /tmp/registry.yaml",
       "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
-      "eval $KCTL apply -f /tmp/registry.yaml",
-      "eval $KCTL -n registry rollout status deployment/registry --timeout=5m",
+      # Explicit failure propagation -- see install_vsphere_csi's comment.
+      "eval $KCTL apply -f /tmp/registry.yaml || exit 1",
+      "eval $KCTL -n registry rollout status deployment/registry --timeout=5m || exit 1",
       "rm -f /tmp/registry.yaml",
     ]
   }
@@ -424,11 +434,11 @@ resource "null_resource" "configure_registry_mirror_workers" {
       # Carries the registry's plaintext password (see registries.yaml.tpl's
       # configs.auth block) -- restrict before it lands, clean up after.
       "chmod 600 /tmp/registries.yaml",
-      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
-      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
-      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
-      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
-      "sudo systemctl restart rke2-agent",
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo systemctl restart rke2-agent || exit 1",
       "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
@@ -477,11 +487,11 @@ resource "null_resource" "configure_registry_mirror_cp0" {
       # Carries the registry's plaintext password (see registries.yaml.tpl's
       # configs.auth block) -- restrict before it lands, clean up after.
       "chmod 600 /tmp/registries.yaml",
-      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
-      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
-      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
-      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
-      "sudo systemctl restart rke2-server",
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo systemctl restart rke2-server || exit 1",
       "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
@@ -528,11 +538,11 @@ resource "null_resource" "configure_registry_mirror_cp1" {
       # Carries the registry's plaintext password (see registries.yaml.tpl's
       # configs.auth block) -- restrict before it lands, clean up after.
       "chmod 600 /tmp/registries.yaml",
-      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
-      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
-      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
-      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
-      "sudo systemctl restart rke2-server",
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo systemctl restart rke2-server || exit 1",
       "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
@@ -579,11 +589,11 @@ resource "null_resource" "configure_registry_mirror_cp2" {
       # Carries the registry's plaintext password (see registries.yaml.tpl's
       # configs.auth block) -- restrict before it lands, clean up after.
       "chmod 600 /tmp/registries.yaml",
-      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml",
-      "sudo chmod 600 /etc/rancher/rke2/registries.yaml",
-      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt",
-      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt",
-      "sudo systemctl restart rke2-server",
+      "sudo cp /tmp/registries.yaml /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo chmod 600 /etc/rancher/rke2/registries.yaml || exit 1",
+      "sudo cp /tmp/registry-ca.crt /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo chmod 644 /etc/rancher/rke2/registry-ca.crt || exit 1",
+      "sudo systemctl restart rke2-server || exit 1",
       "rm -f /tmp/registries.yaml /tmp/registry-ca.crt",
     ]
   }
@@ -628,13 +638,19 @@ resource "null_resource" "install_metallb" {
   provisioner "remote-exec" {
     inline = [
       "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
-      "eval $KCTL apply -f ${local.metallb_manifest_url}",
-      "eval $KCTL -n metallb-system rollout status deployment/controller --timeout=5m",
-      "eval $KCTL -n metallb-system rollout status daemonset/speaker --timeout=5m",
+      # None of these steps had explicit failure propagation -- a mid-script
+      # kubectl failure (e.g. the apiserver briefly refusing connections
+      # during the underlying storage incident, not rare on this cluster)
+      # just let the script fall through to its last command, which always
+      # succeeded, so Terraform reported "Creation complete" while nothing
+      # had actually been applied. Confirmed happening in practice, twice.
+      "eval $KCTL apply -f ${local.metallb_manifest_url} || exit 1",
+      "eval $KCTL -n metallb-system rollout status deployment/controller --timeout=5m || exit 1",
+      "eval $KCTL -n metallb-system rollout status daemonset/speaker --timeout=5m || exit 1",
       # The validating webhook's endpoint can take a few seconds past
       # "rollout complete" to actually start accepting connections -- retry
       # rather than fail on the first attempt.
-      "for i in $(seq 1 12); do eval $KCTL apply -f /tmp/metallb-config.yaml && break; sleep 5; done",
+      "for i in $(seq 1 12); do eval $KCTL apply -f /tmp/metallb-config.yaml && break; sleep 5; done; eval $KCTL get ipaddresspool -n metallb-system default || exit 1",
     ]
   }
 }
@@ -734,8 +750,12 @@ resource "null_resource" "install_kyverno" {
       # Try it, and if it fails, force-clear Helm's own release-tracking
       # Secret directly -- observed necessary in practice, not theoretical.
       "eval $HELM status kyverno -n kyverno 2>/dev/null | grep -qE 'STATUS: (pending-|failed|uninstalling|unknown)' && (eval $HELM uninstall kyverno -n kyverno || eval $KCTL delete secret -n kyverno -l owner=helm,name=kyverno); true",
-      "eval $HELM upgrade --install kyverno kyverno/kyverno --namespace kyverno --create-namespace --version ${var.kyverno_chart_version} --wait --timeout 5m",
-      "eval $KCTL apply -f /tmp/kyverno-baseline-policies.yaml",
+      # Explicit failure propagation -- see install_metallb's comment above
+      # for why this matters (a mid-script kubectl failure previously fell
+      # through to `rm -f`, which always succeeds, so Terraform reported
+      # success while the policies were never actually applied).
+      "eval $HELM upgrade --install kyverno kyverno/kyverno --namespace kyverno --create-namespace --version ${var.kyverno_chart_version} --wait --timeout 5m || exit 1",
+      "eval $KCTL apply -f /tmp/kyverno-baseline-policies.yaml || exit 1",
       "rm -f /tmp/kyverno-baseline-policies.yaml",
     ]
   }
@@ -854,7 +874,8 @@ resource "null_resource" "harden_ingress" {
   provisioner "remote-exec" {
     inline = [
       "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
-      "eval $KCTL apply -f /tmp/ingress-waf-config.yaml",
+      # Explicit failure propagation -- see install_metallb's comment above.
+      "eval $KCTL apply -f /tmp/ingress-waf-config.yaml || exit 1",
       "rm -f /tmp/ingress-waf-config.yaml",
     ]
   }

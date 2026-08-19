@@ -208,7 +208,10 @@ resource "null_resource" "apply_tenant" {
     inline = concat(
       [
         "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
-        "eval $KCTL apply -f /tmp/tenant-${each.key}.yaml",
+        # Explicit failure propagation -- see install_vsphere_csi's comment
+        # in main.tf for why a trailing always-succeeds cleanup command
+        # (rm -f below) otherwise masks a failed apply as success.
+        "eval $KCTL apply -f /tmp/tenant-${each.key}.yaml || exit 1",
       ],
       local.tenant_node_commands[each.key],
       ["rm -f /tmp/tenant-${each.key}.yaml"],
