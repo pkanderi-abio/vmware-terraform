@@ -66,10 +66,24 @@ locals {
     ip_range = var.metallb_ip_range
   })
 
+  zabbix_proxy_manifest_yaml = templatefile("${path.module}/templates/zabbix/zabbix-proxy.yaml.tpl", {
+    image_ref          = "${local.registry_address}/zabbix-proxy-sqlite3:${var.zabbix_proxy_image}"
+    zabbix_server_host = var.zabbix_server_host
+    proxy_hostname     = var.zabbix_proxy_hostname
+    storage_size       = var.zabbix_proxy_storage_size
+  })
+
+  # Static RBAC (no template variables) -- the ServiceAccount token this
+  # creates is consumed by Zabbix's Kubernetes-monitoring host macros, which
+  # live server-side in Zabbix itself, not in this repo.
+  zabbix_monitoring_rbac_yaml = file("${path.module}/templates/zabbix/zabbix-monitoring-rbac.yaml.tpl")
+
   # Installed via Helm (like Trivy-Operator and Falco below) rather than a
   # static manifest URL -- unlike vsphere-csi-driver/MetalLB/kube-vip, none
   # of these three publish a single kubectl-applyable install.yaml upstream.
   kyverno_baseline_policies_yaml = file("${path.module}/templates/security/kyverno-baseline-policies.yaml")
 
   ingress_waf_config_yaml = file("${path.module}/templates/ingress/waf-config.yaml")
+
+  dashboard_admin_rbac_yaml = file("${path.module}/templates/security/dashboard-admin-rbac.yaml")
 }

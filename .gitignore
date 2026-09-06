@@ -11,3 +11,4 @@ csi-apply.log
 registry-apply.log
 enterprise-apply.log
 kubeconfig.yaml
+*.tfplan

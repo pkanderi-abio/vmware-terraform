@@ -22,6 +22,17 @@ data "vsphere_virtual_machine" "template" {
   datacenter_id = data.vsphere_datacenter.dc.id
 }
 
+# Explicit, not left to vsanDatastore's own "default policy" designation.
+# K8S-CL01 is a 2-host, single-fault-domain vSAN cluster with no witness --
+# the built-in "vSAN Default Storage Policy" requires FTT=1 (3 fault
+# domains) and editing it in place to FTT=0 does not actually take effect
+# for new object creation (confirmed: UI reports the edit saved, but clones
+# still fail with "1 usable fault domains, requires 2 more"). This built-in
+# policy is the one confirmed working end-to-end against this cluster.
+data "vsphere_storage_policy" "single_node" {
+  name = var.vsphere_storage_policy_name
+}
+
 resource "vsphere_folder" "vm_folder" {
   count = var.vsphere_folder != "" ? 1 : 0
 
@@ -56,12 +67,13 @@ resource "vsphere_tag" "terraform_managed" {
 module "control_plane_primary" {
   source = "./modules/vm"
 
-  name             = local.control_plane_names[0]
-  folder           = local.vm_folder_path
-  resource_pool_id = data.vsphere_compute_cluster.cluster.resource_pool_id
-  datastore_id     = data.vsphere_datastore.datastore.id
-  network_id       = data.vsphere_network.network.id
-  template_uuid    = data.vsphere_virtual_machine.template.id
+  name              = local.control_plane_names[0]
+  folder            = local.vm_folder_path
+  resource_pool_id  = data.vsphere_compute_cluster.cluster.resource_pool_id
+  datastore_id      = data.vsphere_datastore.datastore.id
+  storage_policy_id = data.vsphere_storage_policy.single_node.id
+  network_id        = data.vsphere_network.network.id
+  template_uuid     = data.vsphere_virtual_machine.template.id
 
   num_cpus  = var.control_plane_cpu
   memory_mb = var.control_plane_memory_mb
@@ -143,12 +155,13 @@ module "control_plane_secondary" {
   source   = "./modules/vm"
   for_each = toset(["1", "2"])
 
-  name             = local.control_plane_names[tonumber(each.key)]
-  folder           = local.vm_folder_path
-  resource_pool_id = data.vsphere_compute_cluster.cluster.resource_pool_id
-  datastore_id     = data.vsphere_datastore.datastore.id
-  network_id       = data.vsphere_network.network.id
-  template_uuid    = data.vsphere_virtual_machine.template.id
+  name              = local.control_plane_names[tonumber(each.key)]
+  folder            = local.vm_folder_path
+  resource_pool_id  = data.vsphere_compute_cluster.cluster.resource_pool_id
+  datastore_id      = data.vsphere_datastore.datastore.id
+  storage_policy_id = data.vsphere_storage_policy.single_node.id
+  network_id        = data.vsphere_network.network.id
+  template_uuid     = data.vsphere_virtual_machine.template.id
 
   num_cpus  = var.control_plane_cpu
   memory_mb = var.control_plane_memory_mb
@@ -192,14 +205,34 @@ module "control_plane_secondary" {
 
 # Nothing about DRS placement inherently keeps the 3 etcd members on separate
 # hosts -- without this, a single ESXi host failure can take out the entire
-# control plane despite "3 nodes" suggesting otherwise. `mandatory = true`
-# requires at least 3 hosts in the cluster (verified: 4 here); it will block
-# host maintenance-mode entry if too few hosts remain to satisfy it.
+# control plane despite "3 nodes" suggesting otherwise.
+#
+# `mandatory = true` (a hard DRS rule vCenter will refuse to violate) requires
+# at least as many hosts as control-plane VMs -- true on the original 4-host
+# LAB-CL01, but K8S-CL01 (this cluster's current home, see terraform.tfvars)
+# has only 2 hosts. With mandatory=true, vCenter hard-blocked powering
+# rke2-lab-cp-2 back on once cp-0 and cp-1 already occupied both hosts
+# ("This operation would violate a virtual machine affinity/anti-affinity
+# rule" / "vCenter Server was unable to find a suitable host") -- spreading 3
+# VMs across 3 hosts is arithmetically impossible with only 2 available.
+#
+# Dropping to mandatory=false alone did NOT fix it: confirmed directly
+# against this vCenter (8.0.3) that DRS's power-on admission check still
+# hard-blocks on ANY *enabled* anti-affinity rule it can't satisfy,
+# regardless of the mandatory flag -- the mandatory/soft distinction only
+# seems to affect DRS's own migration recommendations, not initial power-on
+# placement. The only thing that actually let rke2-lab-cp-2 power on again
+# was enabled=false (confirmed live via a direct ReconfigureComputeResource
+# call, then powering the VM on, before this file was updated to match).
+# With only 2 hosts, this rule can never be satisfiable anyway (2 of the 3
+# control-plane VMs must always share a host), so there's no real
+# protection being given up by disabling it here -- unlike LAB-CL01, this
+# is not a "nice to have -- weaken if inconvenient" tradeoff.
 resource "vsphere_compute_cluster_vm_anti_affinity_rule" "control_plane" {
   name               = "${var.cluster_name}-control-plane-anti-affinity"
   compute_cluster_id = data.vsphere_compute_cluster.cluster.id
-  enabled            = true
-  mandatory          = true
+  enabled            = false
+  mandatory          = false
   virtual_machine_ids = concat(
     [module.control_plane_primary.id],
     [for m in module.control_plane_secondary : m.id],
@@ -214,12 +247,13 @@ module "workers" {
   source   = "./modules/vm"
   for_each = toset([for i in range(var.worker_count) : tostring(i)])
 
-  name             = local.worker_names[tonumber(each.key)]
-  folder           = local.vm_folder_path
-  resource_pool_id = data.vsphere_compute_cluster.cluster.resource_pool_id
-  datastore_id     = data.vsphere_datastore.datastore.id
-  network_id       = data.vsphere_network.network.id
-  template_uuid    = data.vsphere_virtual_machine.template.id
+  name              = local.worker_names[tonumber(each.key)]
+  folder            = local.vm_folder_path
+  resource_pool_id  = data.vsphere_compute_cluster.cluster.resource_pool_id
+  datastore_id      = data.vsphere_datastore.datastore.id
+  storage_policy_id = data.vsphere_storage_policy.single_node.id
+  network_id        = data.vsphere_network.network.id
+  template_uuid     = data.vsphere_virtual_machine.template.id
 
   num_cpus  = var.worker_cpu
   memory_mb = var.worker_memory_mb
@@ -385,6 +419,83 @@ resource "null_resource" "install_registry" {
       "eval $KCTL apply -f /tmp/registry.yaml || exit 1",
       "eval $KCTL -n registry rollout status deployment/registry --timeout=5m || exit 1",
       "rm -f /tmp/registry.yaml",
+    ]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Zabbix proxy: reports to an existing external Zabbix Server (var.
+# zabbix_server_host), active mode, SQLite-backed. Not a monitoring
+# solution on its own -- this just gets the proxy connected; wiring up
+# what it actually monitors (host/agent checks, or Zabbix's native
+# Kubernetes-API-based cluster monitoring) is a separate, deliberate step
+# done from the Zabbix Server side once this is confirmed online.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "install_zabbix_proxy" {
+  depends_on = [null_resource.install_vsphere_csi]
+
+  triggers = {
+    manifest_hash  = md5(local.zabbix_proxy_manifest_yaml)
+    script_version = "1"
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    agent       = false
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.zabbix_proxy_manifest_yaml
+    destination = "/tmp/zabbix-proxy.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      "eval $KCTL apply -f /tmp/zabbix-proxy.yaml || exit 1",
+      "eval $KCTL -n zabbix rollout status deployment/zabbix-proxy --timeout=5m || exit 1",
+      "rm -f /tmp/zabbix-proxy.yaml",
+    ]
+  }
+}
+
+# RBAC consumed by Zabbix's native Kubernetes-API monitoring (the
+# "Kubernetes ... by HTTP" template family, polled by the proxy above
+# directly against the API server/kubelets -- no in-cluster agent). This
+# ServiceAccount's token has to be pasted into Zabbix's host macros by
+# hand (or via the Zabbix API) after every token rotation -- Terraform has
+# no reach into Zabbix itself, which isn't managed by this repo.
+resource "null_resource" "install_zabbix_monitoring_rbac" {
+  depends_on = [null_resource.wait_for_primary]
+
+  triggers = {
+    manifest_hash = md5(local.zabbix_monitoring_rbac_yaml)
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    agent       = false
+    timeout     = "5m"
+  }
+
+  provisioner "file" {
+    content     = local.zabbix_monitoring_rbac_yaml
+    destination = "/tmp/zabbix-monitoring-rbac.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      "eval $KCTL apply -f /tmp/zabbix-monitoring-rbac.yaml || exit 1",
+      "rm -f /tmp/zabbix-monitoring-rbac.yaml",
     ]
   }
 }
@@ -610,6 +721,55 @@ resource "null_resource" "configure_registry_mirror_cp2" {
 }
 
 # ---------------------------------------------------------------------------
+# cp-0's vApp properties (a live password/SSH keys baked into the source
+# template -- see modules/vm's vapp block) do not reliably read back as null
+# even after being blanked, so nearly every apply reconfigures cp-0's VM
+# again. A vApp reconfigure forces a real guest OS reboot, not just a
+# metadata change. Terraform's own "Modifications complete" only means the
+# vSphere-side reconfigure task finished -- it does not wait for rke2-server/
+# etcd/the apiserver to actually come back up inside the guest afterward.
+# Every install_* resource below SSHes into cp-0 to run kubectl/helm against
+# its own local apiserver; without an explicit health wait here first, they
+# raced that reboot window and failed with "connection refused" -- confirmed
+# happening in practice, repeatedly, across multiple separate apply runs.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "wait_for_cp0_healthy" {
+  depends_on = [
+    module.control_plane_primary,
+    null_resource.install_vsphere_csi,
+    null_resource.configure_registry_mirror_cp0,
+    null_resource.configure_registry_mirror_cp1,
+    null_resource.configure_registry_mirror_cp2,
+  ]
+
+  # Must actually re-run on every apply (not just once) since the vApp
+  # drift -- and therefore the reboot it triggers -- recurs on every apply.
+  triggers = {
+    always_run = timestamp()
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    agent       = false
+    timeout     = "10m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      # 60 x 5s = 5m -- generous given this cluster's storage-induced etcd
+      # fsync stalls can stretch a routine post-reboot rejoin out.
+      "for i in $(seq 1 60); do eval $KCTL get --raw=/healthz >/dev/null 2>&1 && break; sleep 5; done",
+      "eval $KCTL get --raw=/healthz || exit 1",
+    ]
+  }
+}
+
+# ---------------------------------------------------------------------------
 # MetalLB: gives Services of type LoadBalancer (starting with ingress-nginx,
 # which otherwise only has per-node hostPort 80/443 -- reachable, but callers
 # would need to know all N node IPs rather than one stable floating address)
@@ -618,13 +778,7 @@ resource "null_resource" "configure_registry_mirror_cp2" {
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "install_metallb" {
-  # See install_helm's comment further down -- same cp-0-restart race, same fix.
-  depends_on = [
-    null_resource.install_vsphere_csi,
-    null_resource.configure_registry_mirror_cp0,
-    null_resource.configure_registry_mirror_cp1,
-    null_resource.configure_registry_mirror_cp2,
-  ]
+  depends_on = [null_resource.wait_for_cp0_healthy]
 
   # See install_vsphere_csi's comment on why this exists.
   triggers = {
@@ -681,22 +835,11 @@ resource "null_resource" "install_metallb" {
 # ---------------------------------------------------------------------------
 
 resource "null_resource" "install_helm" {
-  # configure_registry_mirror_cp0/1/2 each restart rke2-server (and therefore
-  # that node's apiserver) on their target control-plane node. Every install_*
-  # resource below SSHes into cp-0 specifically to run kubectl/helm against
-  # its LOCAL apiserver (127.0.0.1:6443 via its kubeconfig) -- with no
-  # ordering against configure_registry_mirror_cp0, Terraform is free to run
-  # both in parallel, and one restarting cp-0's apiserver while the other is
-  # mid-`kubectl apply` against it produces exactly the "connection refused"
-  # failures this dependency exists to prevent. Waiting on all three (not
-  # just cp0) also avoids doing more cluster-wide installs during any
-  # control-plane node's restart-induced apiserver quorum disruption window.
-  depends_on = [
-    null_resource.install_vsphere_csi,
-    null_resource.configure_registry_mirror_cp0,
-    null_resource.configure_registry_mirror_cp1,
-    null_resource.configure_registry_mirror_cp2,
-  ]
+  # See wait_for_cp0_healthy's comment above install_metallb -- same
+  # cp-0-reboot race (vApp reconfigure, not just configure_registry_mirror's
+  # rke2-server restart), same fix: wait for a real health check, not just
+  # resource-graph ordering.
+  depends_on = [null_resource.wait_for_cp0_healthy]
 
   connection {
     type        = "ssh"
@@ -720,7 +863,13 @@ resource "null_resource" "install_helm" {
 }
 
 resource "null_resource" "install_kyverno" {
-  depends_on = [null_resource.install_helm]
+  # Serialized after install_metallb (not run in parallel with it) --
+  # kyverno/trivy-operator/falco all write heavily to etcd during their Helm
+  # installs, and running them concurrently against an etcd already
+  # struggling with the shared datastore's I/O latency (see CLAUDE.md)
+  # produced a storm of genuine "etcdserver: request timed out" errors,
+  # confirmed happening in practice, not a Terraform ordering bug this time.
+  depends_on = [null_resource.install_helm, null_resource.install_metallb]
 
   # Re-run when the pinned chart version changes or the baseline policy set
   # itself changes -- Helm's own idempotency handles the chart install/
@@ -771,7 +920,12 @@ resource "null_resource" "install_kyverno" {
       # for why this matters (a mid-script kubectl failure previously fell
       # through to `rm -f`, which always succeeds, so Terraform reported
       # success while the policies were never actually applied).
-      "eval $HELM upgrade --install kyverno kyverno/kyverno --namespace kyverno --create-namespace --version ${var.kyverno_chart_version} --wait --timeout 5m || exit 1",
+      # CPU limits added (2026-08-28 security sweep): the chart's own
+      # defaults set a memory limit on all four controllers but no CPU
+      # limit, which is exactly what require-resource-limits/require-limits
+      # flags -- same gap independently found and fixed on the CNPG
+      # postgres Cluster in observe-dev.
+      "eval $HELM upgrade --install kyverno kyverno/kyverno --namespace kyverno --create-namespace --version ${var.kyverno_chart_version} --set admissionController.container.resources.limits.cpu=500m --set backgroundController.resources.limits.cpu=200m --set cleanupController.resources.limits.cpu=200m --set reportsController.resources.limits.cpu=200m --wait --timeout 5m || exit 1",
       "eval $KCTL apply -f /tmp/kyverno-baseline-policies.yaml || exit 1",
       "rm -f /tmp/kyverno-baseline-policies.yaml",
     ]
@@ -779,7 +933,9 @@ resource "null_resource" "install_kyverno" {
 }
 
 resource "null_resource" "install_trivy_operator" {
-  depends_on = [null_resource.install_helm]
+  # See install_kyverno's comment above -- same etcd-write-storm reason, same
+  # fix: serialize rather than run all four security-tooling installs at once.
+  depends_on = [null_resource.install_kyverno]
 
   triggers = {
     chart_version = var.trivy_operator_chart_version
@@ -807,13 +963,29 @@ resource "null_resource" "install_trivy_operator" {
       "eval $HELM repo update aqua",
       # See install_kyverno's comment above -- same self-heal, same reason.
       "eval $HELM status trivy-operator -n trivy-system 2>/dev/null | grep -qE 'STATUS: (pending-|failed|uninstalling|unknown)' && (eval $HELM uninstall trivy-operator -n trivy-system || eval $KCTL delete secret -n trivy-system -l owner=helm,name=trivy-operator); true",
-      "eval $HELM upgrade --install trivy-operator aqua/trivy-operator --namespace trivy-system --create-namespace --version ${var.trivy_operator_chart_version} --set trivy.ignoreUnfixed=true --wait --timeout 5m",
+      # resources.limits/securityContext.runAsNonRoot cover the operator's
+      # own Deployment only. Do NOT also set
+      # trivyOperator.scanJobPodTemplateContainerSecurityContext.runAsNonRoot
+      # here -- tried during the 2026-08-28 sweep to also satisfy Kyverno's
+      # require-run-as-non-root audit on the scan-job pods, but the
+      # aquasec/trivy image genuinely runs as root by default (no
+      # -nonroot variant used here), so every scan Job across the cluster
+      # failed its init container with "container has runAsNonRoot and
+      # image will run as root" -- confirmed live the next day when this
+      # had silently blocked all vulnerability scanning. Same failure mode
+      # as forcing runAsNonRoot on grafana/alloy (see infrawatch-alloy's
+      # own history) -- an image's actual default user has to be verified
+      # before forcing this, not assumed from the chart exposing the knob.
+      # Left as an accepted Kyverno audit-mode gap instead.
+      "eval $HELM upgrade --install trivy-operator aqua/trivy-operator --namespace trivy-system --create-namespace --version ${var.trivy_operator_chart_version} --set trivy.ignoreUnfixed=true --set resources.limits.cpu=500m --set resources.limits.memory=512Mi --set securityContext.runAsNonRoot=true --wait --timeout 5m",
     ]
   }
 }
 
 resource "null_resource" "install_falco" {
-  depends_on = [null_resource.install_helm]
+  # See install_kyverno's comment above -- same etcd-write-storm reason, same
+  # fix: serialize rather than run all four security-tooling installs at once.
+  depends_on = [null_resource.install_trivy_operator]
 
   triggers = {
     chart_version = var.falco_chart_version
@@ -846,6 +1018,72 @@ resource "null_resource" "install_falco" {
       # Self-heal, same reason as install_kyverno's comment above.
       "eval $HELM status falco -n falco 2>/dev/null | grep -qE 'STATUS: (pending-|failed|uninstalling|unknown)' && (eval $HELM uninstall falco -n falco || eval $KCTL delete secret -n falco -l owner=helm,name=falco); true",
       "eval $HELM upgrade --install falco falcosecurity/falco --namespace falco --create-namespace --version ${var.falco_chart_version} --set driver.kind=modern_ebpf --wait --timeout 5m",
+    ]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Kubernetes Dashboard: web UI for cluster inspection/management. Kept
+# ClusterIP-only (no Ingress/LoadBalancer) -- it's a cluster-admin-capable
+# surface, and this repo's existing services (registry, MetalLB-fronted
+# ingress) are the only things deliberately exposed beyond the cluster
+# network. Reach it via `kubectl port-forward`, not a public endpoint.
+# ---------------------------------------------------------------------------
+
+resource "null_resource" "install_kubernetes_dashboard" {
+  # See install_kyverno's comment above -- same etcd-write-storm reason, same
+  # fix: serialize rather than run every security/admin-tooling install at once.
+  depends_on = [null_resource.install_falco]
+
+  triggers = {
+    chart_version  = var.kubernetes_dashboard_chart_version
+    rbac_hash      = md5(local.dashboard_admin_rbac_yaml)
+    script_version = "2"
+  }
+
+  connection {
+    type        = "ssh"
+    host        = var.control_plane_ip_addresses[0]
+    user        = "ubuntu"
+    private_key = file(var.ssh_private_key_path)
+    # Terraform's SSH communicator attempts agent forwarding by default even
+    # when a private_key is given directly, and hard-fails if SSH_AUTH_SOCK
+    # isn't reachable in whatever environment `terraform apply` runs in
+    # (common on macOS depending on terminal/IDE integration). The private
+    # key alone is sufficient for auth; agent forwarding was never needed.
+    agent   = false
+    timeout = "10m"
+  }
+
+  provisioner "file" {
+    content     = local.dashboard_admin_rbac_yaml
+    destination = "/tmp/dashboard-admin-rbac.yaml"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "HELM='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml helm'",
+      "KCTL='sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml /var/lib/rancher/rke2/bin/kubectl'",
+      # The chart's own README documents https://kubernetes.github.io/dashboard/,
+      # which 404s -- the project was moved to kubernetes-retired/dashboard on
+      # GitHub without the docs being updated. This is the actual, verified,
+      # working repo URL (confirmed serving a real index.yaml).
+      "eval $HELM repo add kubernetes-dashboard https://kubernetes-retired.github.io/dashboard/",
+      "eval $HELM repo update kubernetes-dashboard",
+      # Self-heal, same reason as install_kyverno's comment above.
+      "eval $HELM status kubernetes-dashboard -n kubernetes-dashboard 2>/dev/null | grep -qE 'STATUS: (pending-|failed|uninstalling|unknown)' && (eval $HELM uninstall kubernetes-dashboard -n kubernetes-dashboard || eval $KCTL delete secret -n kubernetes-dashboard -l owner=helm,name=kubernetes-dashboard); true",
+      # kong.proxy.type=LoadBalancer -- default is ClusterIP, which only
+      # reaches the dashboard via `kubectl port-forward`. This cluster
+      # already runs MetalLB (see install_metallb), so a LoadBalancer here
+      # gets a stable IP from its pool with no port-forward ever needed.
+      # Tradeoff: the dashboard sits behind a cluster-admin-scoped token
+      # (dashboard-admin-rbac.yaml) and this makes it reachable from
+      # anywhere on the flat 192.168.100.0/24 network, not just localhost --
+      # accepted here as a trusted-network tradeoff, same posture as the
+      # plain-HTTP in-cluster registry documented in CLAUDE.md.
+      "eval $HELM upgrade --install kubernetes-dashboard kubernetes-dashboard/kubernetes-dashboard --namespace kubernetes-dashboard --create-namespace --version ${var.kubernetes_dashboard_chart_version} --set kong.proxy.type=LoadBalancer --wait --timeout 5m || exit 1",
+      "eval $KCTL apply -f /tmp/dashboard-admin-rbac.yaml || exit 1",
+      "rm -f /tmp/dashboard-admin-rbac.yaml",
     ]
   }
 }

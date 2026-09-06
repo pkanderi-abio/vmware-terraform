@@ -57,6 +57,21 @@ variable "vsphere_datastore_url" {
   type        = string
 }
 
+variable "vsphere_storage_policy_name" {
+  description = <<-EOT
+    Name of an existing VM Storage Policy to assign explicitly to every VM
+    clone, rather than relying on the target datastore's own default policy
+    designation. On a 2-host, single-fault-domain vSAN cluster (K8S-CL01,
+    no witness appliance), the built-in "vSAN Default Storage Policy"
+    requires FTT=1 (3 fault domains) and editing it in place to FTT=0/"No
+    data redundancy" does not reliably take effect for new object creation.
+    Default here is vSAN's own built-in policy meant for exactly this
+    topology; change only if the target datastore/cluster is not this one.
+  EOT
+  type        = string
+  default     = "Management Storage Policy - Single Node"
+}
+
 variable "vsphere_network" {
   description = "Name of the portgroup / network the VMs will attach to."
   type        = string
@@ -224,6 +239,12 @@ variable "falco_chart_version" {
   default     = "9.1.0"
 }
 
+variable "kubernetes_dashboard_chart_version" {
+  description = "kubernetes-dashboard/kubernetes-dashboard Helm chart version -- web UI for cluster inspection/management. The project moved to kubernetes-retired/dashboard on GitHub; its own README still documents the old (now-404) kubernetes.github.io/dashboard/ repo URL, so main.tf points at the working kubernetes-retired.github.io/dashboard/ one instead. Re-check https://github.com/kubernetes-retired/dashboard before assuming either URL is still current."
+  type        = string
+  default     = "7.14.0"
+}
+
 variable "oidc_issuer_url" {
   description = <<-EOT
     OIDC issuer URL for real user authentication against the API server (the
@@ -357,6 +378,50 @@ variable "metallb_version" {
 variable "metallb_ip_range" {
   description = "IP range MetalLB hands out for type: LoadBalancer Services, e.g. \"192.168.100.20-192.168.100.29\". Must not overlap the cluster's own static IPs/VIP, and should be excluded from the network's DHCP pool."
   type        = string
+}
+
+# -----------------------------------------------------------------------------
+# Zabbix proxy (monitoring)
+# -----------------------------------------------------------------------------
+
+variable "zabbix_proxy_image" {
+  description = <<-EOT
+    Tag of the zabbix-proxy-sqlite3 image hosted in this repo's own in-cluster
+    registry (see local.registry_address) -- NOT a Docker Hub tag. As of
+    2026-08, neither Docker Hub nor the zabbix-community Helm chart have
+    published anything past Zabbix 7.4, but the target Zabbix Server here
+    runs 8.0.0 -- Zabbix's proxy/server compatibility check hard-rejects a
+    proxy a full major version behind ("proxy and server major versions do
+    not match"), so 7.4.x doesn't actually work here even though it's newer
+    than nothing. This image was built locally from zabbix/zabbix-docker's
+    `trunk` branch (`make base && make bake-target TARGET=build-sqlite3 &&
+    make bake-target TARGET=proxy-sqlite3`, in a throwaway clone -- not
+    vendored into this repo) and pushed to the in-cluster registry as
+    "8.0.0rc1" (that's genuinely what `zabbix_proxy -V` reports -- trunk
+    tracks pre-release code, since 8.0 hasn't GA'd publicly as stable
+    packages yet). Re-point this at an upstream Docker Hub tag once Zabbix
+    publishes real 8.0.x images -- this local build is a stopgap, not
+    something to keep maintaining by hand long-term.
+  EOT
+  type        = string
+  default     = "8.0.0rc1"
+}
+
+variable "zabbix_server_host" {
+  description = "IP/hostname of the existing external Zabbix Server this proxy reports to. The proxy runs in active mode (connects out to this address on port 10051) -- no inbound exposure needed, so nothing here goes through MetalLB/Ingress."
+  type        = string
+}
+
+variable "zabbix_proxy_hostname" {
+  description = "Name this proxy registers as. For an active proxy, this must exactly match a proxy already created on the Zabbix Server (Administration -> Proxies) with mode set to Active -- the server silently ignores data from a name it doesn't recognize."
+  type        = string
+  default     = "rke2-cluster-proxy"
+}
+
+variable "zabbix_proxy_storage_size" {
+  description = "PVC size for the proxy's SQLite database (its local buffer, not permanent history -- the server owns real long-term storage)."
+  type        = string
+  default     = "5Gi"
 }
 
 variable "ssh_public_key" {

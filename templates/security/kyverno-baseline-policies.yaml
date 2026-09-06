@@ -8,12 +8,40 @@
 # switch specific policies to Enforce one at a time once you've confirmed
 # nothing legitimate breaks. See SECURITY.md for the rollout procedure.
 #
-# kube-system, vmware-system-csi, and metallb-system are excluded from the
-# privileged/root checks because their real workloads legitimately need
-# those permissions (kube-vip and MetalLB's speaker need hostNetwork +
+# kube-system, vmware-system-csi, metallb-system, and falco are excluded
+# from the privileged/root checks because their real workloads legitimately
+# need those permissions (kube-vip and MetalLB's speaker need hostNetwork +
 # NET_ADMIN/NET_RAW for ARP; the CSI node plugin needs privileged to manage
-# host mounts) -- this is the same exemption pattern CISA's own guidance
-# describes for CNI/CSI/system components, not a blanket carve-out.
+# host mounts; Falco needs privileged + hostPath(/proc, /sys/kernel) +
+# root to do syscall-level runtime monitoring at all) -- this is the same
+# exemption pattern CISA's own guidance describes for CNI/CSI/system
+# components, not a blanket carve-out. Excluding falco also meaningfully
+# reduces per-admission-request evaluation work for its pods specifically:
+# confirmed in practice that Kyverno's webhook (hardcoded 10s timeout in
+# this chart version, not configurable via any Helm value or CLI flag)
+# was intermittently timing out on Falco's own multi-container, multiple
+# hostPath-volume, privileged pod spec, which -- because the webhook's
+# failurePolicy is Fail -- hard-blocked the falco DaemonSet from creating
+# pods at all on some nodes even though these are Audit-only policies that
+# were never going to block on violation content.
+#
+# gh-runner and github-runner (added 2026-08-29 security sweep) are each a
+# single self-hosted GitHub Actions runner pod, dedicated to its own
+# namespace -- myoung34/github-runner's image runs as root by design (it
+# installs packages and self-registers at container start; confirmed live
+# via `docker exec ... id` against the actual running container, not
+# assumed) and there's no supported non-root variant. Least-privilege for
+# these is enforced at the Kubernetes RBAC layer instead (see
+# infrawatch-observe's helm/gh-runner and vmware-dashboard's
+# k8s/runner/rbac.yaml, both tightly scoped) plus a NetworkPolicy denying
+# all ingress and scoping egress to DNS/API-server/HTTPS -- not something
+# a runAsNonRoot check can substitute for on this specific workload. A
+# real Kyverno PolicyException (scoped to just these Deployments rather
+# than their whole namespace) would be the more precise fix, but this
+# chart version ships PolicyExceptions disabled by default
+# (`admissionController.policyExceptions.enabled: false`) and enabling
+# that feature flag wasn't done in the same pass that found this gap --
+# see SECURITY.md.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
@@ -34,7 +62,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: ["kube-system", "vmware-system-csi", "metallb-system"]
+              namespaces: ["kube-system", "vmware-system-csi", "metallb-system", "falco", "gh-runner", "github-runner"]
       validate:
         message: "Privileged containers are not allowed outside system namespaces."
         pattern:
@@ -69,7 +97,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: ["kube-system", "vmware-system-csi", "metallb-system"]
+              namespaces: ["kube-system", "vmware-system-csi", "metallb-system", "falco", "gh-runner", "github-runner"]
       validate:
         message: "Containers must set securityContext.runAsNonRoot: true."
         pattern:
@@ -129,7 +157,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: ["kube-system", "vmware-system-csi", "metallb-system"]
+              namespaces: ["kube-system", "vmware-system-csi", "metallb-system", "falco", "gh-runner", "github-runner"]
       validate:
         message: "Containers must set CPU and memory limits -- an unbounded container can starve every other workload on its node, including this cluster's own control-plane components if scheduled onto a control-plane node."
         pattern:

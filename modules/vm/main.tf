@@ -1,8 +1,9 @@
 resource "vsphere_virtual_machine" "this" {
-  name             = var.name
-  folder           = var.folder
-  resource_pool_id = var.resource_pool_id
-  datastore_id     = var.datastore_id
+  name              = var.name
+  folder            = var.folder
+  resource_pool_id  = var.resource_pool_id
+  datastore_id      = var.datastore_id
+  storage_policy_id = var.storage_policy_id
 
   num_cpus             = var.num_cpus
   num_cores_per_socket = 1
@@ -24,9 +25,14 @@ resource "vsphere_virtual_machine" "this" {
   enable_disk_uuid = true
 
   # The source template is stuck on vmx-10 (vSphere 5.5 era). vSphere CSI's
-  # CNS disk-attach operation requires at least vmx-13; 20 gives full headroom
-  # on a modern (8.0.x) ESXi cluster without assuming the latest possible rev.
-  hardware_version = 20
+  # CNS disk-attach operation requires at least vmx-13. This was originally
+  # pinned to 20 for headroom below this cluster's max (8.0.3 supports up to
+  # vmx-21), but every VM ended up live at vmx-21 anyway after a rebuild --
+  # Terraform doesn't support downgrading hardware version, so any apply
+  # after that drift fails outright ("cannot downgrade virtual machine
+  # hardware version") until the config is bumped to match. Set to 21 to
+  # match; re-verify against `host.config.product` before raising further.
+  hardware_version = 21
 
   # A hardware-version upgrade means a slower-than-usual first boot as the
   # guest renegotiates virtual devices; the provider's 5-minute default has
@@ -38,9 +44,10 @@ resource "vsphere_virtual_machine" "this" {
   }
 
   disk {
-    label            = "disk0"
-    size             = var.disk_gb
-    thin_provisioned = true
+    label             = "disk0"
+    size              = var.disk_gb
+    thin_provisioned  = true
+    storage_policy_id = var.storage_policy_id
   }
 
   # Required whenever the source template carries vApp properties in its OVF
@@ -90,6 +97,38 @@ resource "vsphere_virtual_machine" "this" {
       # one-at-a-time `terraform apply -replace=<this resource address>`,
       # never an in-place update -- see CLAUDE.md's etcd-identity rough edge.
       extra_config,
+      # Confirmed live (pyvmomi read of config.vAppConfig.property right
+      # after Terraform reported this reconfigure "complete"): the blank-out
+      # above never actually persists -- vCenter keeps reporting the
+      # template's original plaintext password and SSH key on every refresh
+      # regardless. So every apply was reconfiguring all 9 VMs' vApp
+      # properties for a change that silently never took effect, and a vApp
+      # reconfigure forces a real guest OS reboot -- meaning every single
+      # apply was rebooting the entire cluster for a no-op, which is what
+      # was actually causing the cascade of "connection refused"/etcd-
+      # timeout failures during unrelated installs this session, not
+      # primarily the shared-datastore instability itself. Since the
+      # blanking doesn't work via live reconfigure, the real fix is at the
+      # template level (rebuild it without the baked-in credentials) --
+      # not something to keep re-attempting here every apply.
+      vapp,
+      # Any CNS-attached (CSI/PVC-backed) volume on a node shows up on
+      # refresh as an unmanaged extra `disk` block, which Terraform then
+      # wants to relabel from its synthetic "orphaned_disk_N" name to
+      # "<remove, keep disk>" -- previously treated as a harmless,
+      # cosmetic-only bookkeeping fix (see CLAUDE.md's Registry section).
+      # Confirmed NOT harmless: CNS actively attaches/detaches these disks
+      # as pods get scheduled/rescheduled, so the disk list Terraform saw at
+      # plan time can already be stale by apply time -- a real apply hit
+      # exactly this and failed with "Invalid configuration for device '0'"
+      # partway through, leaving all 6 worker VMs powered off. Ignoring the
+      # whole `disk` list (not just the synthetic entries) is the only way
+      # to express this with Terraform's ignore_changes syntax, since the
+      # orphaned entries are dynamically many and can't be targeted by
+      # index -- the tradeoff is that resizing the boot disk via var.disk_gb
+      # no longer triggers a managed resize either, which this repo doesn't
+      # currently do anywhere.
+      disk,
     ]
   }
 }

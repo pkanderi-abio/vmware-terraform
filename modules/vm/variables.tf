@@ -15,6 +15,12 @@ variable "datastore_id" {
   type = string
 }
 
+variable "storage_policy_id" {
+  description = "VM Storage Policy to assign explicitly, rather than relying on the datastore's own default policy designation."
+  type        = string
+  default     = null
+}
+
 variable "network_id" {
   type = string
 }

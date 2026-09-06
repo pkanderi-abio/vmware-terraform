@@ -51,9 +51,29 @@ spec:
       labels:
         app: registry
     spec:
+      # fsGroup rather than runAsUser/runAsGroup alone: the PVC already has
+      # existing data owned root:root from every prior run (this exact
+      # volume has a documented history of ext4 corruption incidents -- see
+      # CLAUDE.md's Registry section -- so minimizing what changes about
+      # how it's mounted matters here). fsGroup makes kubelet chown the
+      # volume to this group on mount without needing to already know/set
+      # a matching owning user, and is additive to the existing root-owned
+      # files rather than replacing their ownership outright.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
         - name: registry
           image: registry:2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
           ports:
             - containerPort: 5000
           env:
